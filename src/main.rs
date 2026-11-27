@@ -4840,42 +4840,62 @@ async fn handle_daemon(
             let client_addr = lifecycle::daemon_stop::resolve_client_addr(&data_dir);
             let responds = lifecycle::daemon_stop::probe(&client_addr).await;
             avi_shared::diag_trace::mark("start.health_probe_done");
-            avi_term::line::context(&format!("Daemon · {client_addr}"));
-            // El indicador nace **antes** de la parada del daemon residual: así
-            // no hay segundos de silencio antes de la primera fase, y el mismo
-            // indicador sirve para `start`, `stop` y `restart`.
-            let progress = PhaseProgress::new();
             avi_shared::diag_trace::mark("start.observe_begin");
-            match lifecycle::daemon_stop::observe(&data_dir, &ProductProcesses, responds) {
-                lifecycle::daemon_stop::DaemonState::Running { pid } => {
-                    if json_mode {
-                        emit_raw_json(
-                            json!({ "status": "already_running", "daemon": "running", "pid": pid }),
-                        );
-                    } else {
-                        avi_term::line::ok(&format!("El daemon ya estaba en marcha · pid {pid}"));
-                    }
-                    return Ok(Outcome::Done);
-                }
-                lifecycle::daemon_stop::DaemonState::Degraded(_) => {
-                    // El aviso es del producto y no puede quedar pegado a la
-                    // fase: `warn` cede la línea antes de escribir.
-                    avi_term::line::warn(
-                        "El daemon que estaba en marcha no respondía bien; se detiene y se arranca de nuevo.",
+            // El estado se observa antes de declarar el recorrido: la parada solo
+            // cuenta en la numeración si el daemon estaba degradado.
+            let state = lifecycle::daemon_stop::observe(&data_dir, &ProductProcesses, responds);
+            let header = format!("Daemon · {client_addr}");
+            let header_pairs = [
+                ("addr", text_value(client_addr.as_str())),
+                ("warm_voice", text_value(warm_voice.as_str())),
+                ("auto_restart", ContextValue::Bool(auto_restart)),
+            ];
+            if let lifecycle::daemon_stop::DaemonState::Running { pid } = state {
+                // Un daemon ya en marcha no tiene recorrido: cabecera y cierre.
+                avi_term::line::context_with(&header, &header_pairs);
+                avi_term::line::ok(&format!("El daemon ya estaba en marcha · pid {pid}"));
+                if json_mode {
+                    emit_raw_json(
+                        json!({ "status": "already_running", "daemon": "running", "pid": pid }),
                     );
-                    progress.phase(&stage::STOPPING);
-                    let outcome = lifecycle::daemon_stop::stop(
-                        &data_dir,
-                        &lifecycle::daemon_stop::default_addr(),
-                        &ProductProcesses,
-                    )
-                    .await;
-                    lifecycle::daemon_stop::require_stopped(&outcome)
-                        .map_err(|failure| lifecycle_error_to_cli(failure.into()))?;
-                    progress.done_as("Daemon detenido");
-                    progress.reclaim();
                 }
-                lifecycle::daemon_stop::DaemonState::Stopped => {}
+                return Ok(Outcome::Done);
+            }
+            let degraded = matches!(state, lifecycle::daemon_stop::DaemonState::Degraded(_));
+            let start_phase = phase_spec(
+                "start",
+                "Arranque",
+                "Arranque",
+                vec![&stage::STARTING, &stage::WARMING],
+            );
+            avi_term::report::declare(Pipeline::new(if degraded {
+                vec![
+                    phase_spec("stop", "Parada", "Parada", vec![&stage::STOPPING]),
+                    start_phase,
+                ]
+            } else {
+                vec![start_phase]
+            }));
+            avi_term::line::context_with(&header, &header_pairs);
+            let progress = PhaseProgress::new();
+            if degraded {
+                progress.phase(&stage::STOPPING);
+                let outcome = lifecycle::daemon_stop::stop(
+                    &data_dir,
+                    &lifecycle::daemon_stop::default_addr(),
+                    &ProductProcesses,
+                )
+                .await;
+                if let Err(failure) = lifecycle::daemon_stop::require_stopped(&outcome) {
+                    progress.fail();
+                    return Err(lifecycle_error_to_cli(failure.into()));
+                }
+                // La etapa se cierra antes del aviso para que este salga debajo
+                // de su línea `✓` y no encima.
+                progress.end_stage();
+                avi_term::line::warn(
+                    "El daemon que estaba en marcha no respondía bien; se detiene y se arranca de nuevo.",
+                );
             }
             avi_shared::diag_trace::mark("start.observe_done");
             let launched = launch_daemon(
@@ -4914,8 +4934,17 @@ async fn handle_daemon(
             // efímero desaparece al detener el daemon; los mensajes diagnostican
             // esa dirección (sin pidfile es la de por defecto).
             let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
-            avi_term::line::context(&format!("Daemon · {client_addr}"));
-            let progress = PhaseProgress::new();
+            avi_term::report::declare(Pipeline::new(vec![phase_spec(
+                "stop",
+                "Parada",
+                "Parada",
+                vec![&stage::STOPPING],
+            )]));
+            avi_term::line::context_with(
+                &format!("Daemon · {client_addr}"),
+                &[("addr", text_value(client_addr.as_str()))],
+            );
+            let progress = PhaseProgress::new().single_stage();
             progress.phase(&stage::STOPPING);
             let outcome = lifecycle::daemon_stop::stop(
                 &effective_data_dir()?,
@@ -4929,7 +4958,9 @@ async fn handle_daemon(
                     progress.finish("Daemon detenido", &[]);
                 } else {
                     // El mensaje depende de `was_running`: sin daemon en marcha
-                    // la operación no «detuvo» nada, y decirlo sería mentir.
+                    // la operación no «detuvo» nada, y decirlo sería mentir. Sin
+                    // nada que detener tampoco hay etapa que contar.
+                    progress.discard_stage();
                     progress.close();
                     avi_term::line::ok("No había ningún daemon en marcha.");
                 }
@@ -4943,22 +4974,29 @@ async fn handle_daemon(
                 }
                 Ok(Outcome::Done)
             } else {
-                progress.close();
+                progress.fail();
                 // El matiz del residente lo dice el predicado del motor
                 // (`StopOutcome::resident_alive`), no el texto de `remaining`: atarlo
                 // al vocabulario de la frase degradaba el error en silencio ante
                 // cualquier reescritura de ese mensaje.
+                // Sin pidfile no hay PID que mostrar: se nombra solo la dirección.
+                let pid = outcome
+                    .pid
+                    .map(|pid| format!("pid {pid} "))
+                    .unwrap_or_default();
                 let message = if outcome.resident_alive {
                     format!(
-                        "El daemon no se apagó tras el deadline (pid {:?} en {}); el residente sigue vivo",
-                        outcome.pid, client_addr
+                        "El daemon no se apagó tras el deadline ({pid}en {client_addr}); el residente sigue vivo"
                     )
                 } else {
                     format!(
-                        "El daemon no se apagó tras el deadline (pid {:?} sigue vivo en {})",
-                        outcome.pid, client_addr
+                        "El daemon no se apagó tras el deadline ({pid}sigue vivo en {client_addr})"
                     )
                 };
+                // El fallo no tiene `reason` propio y ninguna solución de la
+                // tabla encaja: el error sale sin `Solución:`, en los dos modos.
+                avi_term::line::separator();
+                avi_term::line::error(&message, None);
                 if json_mode {
                     emit_raw_json(json!({
                         "status": stop_failed_status(),
@@ -4969,10 +5007,6 @@ async fn handle_daemon(
                         "pid": outcome.pid,
                         "remaining": outcome.remaining,
                     }));
-                } else {
-                    // El fallo no tiene `reason` propio y ninguna solución de la
-                    // tabla encaja: el error sale sin `Solución:`.
-                    avi_term::line::error(&message, None);
                 }
                 Ok(Outcome::Verdict(ExitCode::DaemonUnreachable.code()))
             }
@@ -4983,13 +5017,25 @@ async fn handle_daemon(
             // reclamo por PID.
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
-            // El indicador nace **antes** de la parada, igual que en `start` y
-            // en `stop`: así no hay segundos de silencio antes de la primera
-            // fase, y la fase `stopping` se reutiliza.
-            avi_term::line::context(&format!(
-                "Daemon · {}",
-                lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?)
-            ));
+            // El modelo se comprueba antes de parar nada: si falta, el daemon
+            // que estaba en marcha no se toca.
+            require_model_provisioned()?;
+            let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
+            avi_term::report::declare(Pipeline::new(vec![
+                phase_spec("stop", "Parada", "Parada", vec![&stage::STOPPING]),
+                phase_spec(
+                    "start",
+                    "Arranque",
+                    "Arranque",
+                    vec![&stage::STARTING, &stage::WARMING],
+                ),
+            ]));
+            avi_term::line::context_with(
+                &format!("Daemon · {client_addr}"),
+                &[("addr", text_value(client_addr.as_str()))],
+            );
+            // El indicador nace **antes** de la parada: así no hay segundos de
+            // silencio antes de la primera fase.
             let progress = PhaseProgress::new();
             progress.phase(&stage::STOPPING);
             let outcome = lifecycle::daemon_stop::stop(
@@ -5003,11 +5049,13 @@ async fn handle_daemon(
                 progress.fail();
                 return Err(lifecycle_error_to_cli(failure.into()));
             }
-            // La etapa solo deja línea terminada si había un daemon que detener.
+            // Con un daemon que detener la etapa queda hecha; sin él, omitida.
             if outcome.was_running {
-                progress.done_as("Daemon detenido");
+                progress.end_stage();
+            } else {
+                progress.discard_stage();
+                progress.skip(&stage::STOPPING, "no había ningún daemon en marcha");
             }
-            require_model_provisioned()?;
             let elapsed = t_total.elapsed();
             let remaining = budget
                 .checked_sub(elapsed)
@@ -6198,8 +6246,8 @@ fn ready_file_path() -> Result<PathBuf, CliError> {
 ///
 /// Abre la etapa de inicio al entrar y la de calentamiento tras el `/health`
 /// correcto, de modo que cada una dura lo que dura su trabajo. Si la espera del
-/// calentamiento vence o falla, descarta esa etapa y devuelve el estado; solo en
-/// modo máquina, donde no hay cierre, lo avisa por stderr.
+/// calentamiento vence o falla, la marca como omitida, lo avisa con `⚠` y
+/// devuelve el estado.
 async fn launch_daemon(
     auto_restart: bool,
     max_retries: u32,
@@ -6395,38 +6443,43 @@ async fn launch_daemon(
         .await
     {
         Ok(true) => EngineWarm::Ready,
-        Ok(false) => {
-            // El calentamiento fallido no derriba el daemon (la primera
-            // petición paga el arranque en frío), pero la etapa no puede
-            // decir «Motor calentado».
-            if let Some(progress) = progress {
-                progress.discard_stage();
-            }
-            if avi_term::line::machine_mode() {
-                avi_term::line::warn(
-                        "El daemon está en marcha, pero falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`.",
-                    );
-            }
-            EngineWarm::Failed
-        }
+        // El calentamiento fallido no derriba el daemon (la primera petición
+        // paga el arranque en frío), pero la etapa no puede decir «Motor
+        // calentado».
+        Ok(false) => EngineWarm::Failed,
         Err(_) => {
             // El daemon ya sirve y acota su propio calentamiento, que acaba en
             // `warm` o `warm_failed`; en un equipo lento puede pasar del plazo
-            // de esta espera. No se derriba un daemon sano por eso: la etapa
-            // no dice «Motor calentado» y el cierre remite a `daemon status`.
+            // de esta espera. No se derriba un daemon sano por eso.
             avi_shared::diag_trace::mark("launch_daemon.warm_deadline_expired");
-            if let Some(progress) = progress {
-                progress.discard_stage();
-            }
-            if avi_term::line::machine_mode() {
-                avi_term::line::warn(
-                        "El daemon está en marcha, pero el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo.",
-                    );
-            }
             EngineWarm::StillWarming
         }
     };
+    record_warmup_outcome(progress, &warm);
     Ok((pid, warm))
+}
+
+/// Anota el desenlace del calentamiento. Con el motor listo no hay nada que
+/// anotar: la etapa se cierra sola. Si falló o venció la espera, la etapa
+/// `Calentamiento` queda omitida con su motivo y el aviso sale como `⚠` debajo
+/// de ella, igual con y sin `--json`.
+fn record_warmup_outcome(progress: Option<&PhaseProgress>, warm: &EngineWarm) {
+    let (reason, warning) = match warm {
+        EngineWarm::Ready => return,
+        EngineWarm::StillWarming => (
+            "sigue calentándose",
+            "El daemon está en marcha, pero el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo.",
+        ),
+        EngineWarm::Failed => (
+            "falló el calentamiento",
+            "El daemon está en marcha, pero falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`.",
+        ),
+    };
+    if let Some(progress) = progress {
+        progress.discard_stage();
+        progress.skip(&stage::WARMING, reason);
+    }
+    avi_term::line::warn(warning);
 }
 
 /// Estado del motor cuando el daemon ya sirve.
@@ -6441,34 +6494,19 @@ enum EngineWarm {
 
 /// Línea de cierre de `daemon start` y `daemon restart`: la acción y los extras
 /// según el estado del motor. Con el motor listo la acción es `action_ready`;
-/// si la espera venció o el calentamiento falló, `action_running` y el propio
-/// cierre lo dice, sin un aviso aparte.
+/// si la espera venció o el calentamiento falló, `action_running`. El aviso del
+/// motor no se repite aquí: ya salió como `⚠` bajo `Calentamiento`.
 fn daemon_launch_closing(
     action_ready: &str,
     action_running: &str,
     pid: u32,
     warm: &EngineWarm,
 ) -> (String, Vec<String>) {
-    let pid = format!("pid {pid}");
-    match warm {
-        EngineWarm::Ready => (action_ready.to_string(), vec![pid]),
-        EngineWarm::StillWarming => (
-            action_running.to_string(),
-            vec![
-                pid,
-                "el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo"
-                    .to_string(),
-            ],
-        ),
-        EngineWarm::Failed => (
-            action_running.to_string(),
-            vec![
-                pid,
-                "falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`"
-                    .to_string(),
-            ],
-        ),
-    }
+    let action = match warm {
+        EngineWarm::Ready => action_ready,
+        EngineWarm::StillWarming | EngineWarm::Failed => action_running,
+    };
+    (action.to_string(), vec![format!("pid {pid}")])
 }
 
 /// Limpieza de un arranque fallido: si el hijo sigue vivo, mata su árbol y lo
@@ -8420,14 +8458,7 @@ mod tests {
             &EngineWarm::StillWarming,
         );
         assert_eq!(action, "Daemon en marcha");
-        assert_eq!(
-            extras,
-            vec![
-                "pid 42".to_string(),
-                "el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo"
-                    .to_string(),
-            ]
-        );
+        assert_eq!(extras, vec!["pid 42".to_string()]);
 
         let (action, extras) = daemon_launch_closing(
             "Daemon reiniciado",
@@ -8436,14 +8467,40 @@ mod tests {
             &EngineWarm::Failed,
         );
         assert_eq!(action, "Daemon reiniciado");
+        assert_eq!(extras, vec!["pid 7".to_string()]);
+    }
+
+    /// Un calentamiento fallido o vencido deja la etapa `Calentamiento` omitida
+    /// con su motivo y registra el aviso; con el motor listo no anota nada.
+    #[test]
+    fn warmup_outcome_is_recorded_as_a_skipped_stage_and_a_warning() {
+        use avi_term::report::StageOutcome;
+
+        let _g = avi_term::report::test_guard();
+        avi_term::report::declare(Pipeline::new(vec![phase_spec(
+            "start",
+            "Arranque",
+            "Arranque",
+            vec![&stage::STARTING, &stage::WARMING],
+        )]));
+        let progress = PhaseProgress::new();
+        progress.phase(&stage::STARTING);
+        progress.phase(&stage::WARMING);
+        record_warmup_outcome(Some(&progress), &EngineWarm::Ready);
+        assert!(avi_term::report::snapshot().warnings.is_empty());
+        record_warmup_outcome(Some(&progress), &EngineWarm::Failed);
+        let snapshot = avi_term::report::snapshot();
+        let warming = snapshot
+            .stages
+            .iter()
+            .find(|s| s.label == stage::WARMING.label)
+            .expect("la etapa de calentamiento consta en el registro");
         assert_eq!(
-            extras,
-            vec![
-                "pid 7".to_string(),
-                "falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`"
-                    .to_string(),
-            ]
+            warming.outcome,
+            StageOutcome::Skipped("falló el calentamiento".to_string())
         );
+        assert_eq!(snapshot.warnings.len(), 1);
+        progress.close();
     }
 
     /// Un calentamiento fallido deja de esperar sin darlo por logrado, y uno

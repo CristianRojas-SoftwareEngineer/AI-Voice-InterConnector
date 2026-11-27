@@ -7222,6 +7222,130 @@ mod tts {
         );
     }
 
+    /// Envs propios de una instancia aislada, para devolverlos desde el
+    /// preparador de `assert_same_stderr_with_and_without_json`.
+    fn owned_contract_envs(inst: &IsolatedInstance) -> Vec<(String, String)> {
+        inst.contract_args()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    /// `daemon start` con el puerto ocupado falla tras la cabecera con
+    /// `✗ Arranque` y escribe el mismo stderr con y sin `--json`.
+    #[test]
+    fn daemon_start_port_in_use_has_the_same_stderr_with_and_without_json() {
+        let (stderr, stdout) =
+            assert_same_stderr_with_and_without_json(6, &["daemon", "start"], |tag| {
+                let mut inst = IsolatedInstance::new(tag);
+                seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
+                let decoy = seed_decoy_daemon_pidfile(&inst.dir);
+                let holder = occupy_instance_port(&mut inst);
+                let envs = owned_contract_envs(&inst);
+                ((inst, decoy, holder), envs)
+            });
+        assert!(stderr.starts_with("Daemon · 127.0.0.1:"), "{stderr}");
+        assert!(stderr.contains("✗ Arranque"), "{stderr}");
+        assert!(stderr.contains("Error:"), "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+        assert_eq!(envelope["reason"], "port_in_use", "{envelope}");
+    }
+
+    /// `daemon start --warm-voice` con una voz inexistente falla con
+    /// `voice_not_found` y escribe el mismo stderr con y sin `--json`.
+    #[test]
+    fn daemon_start_missing_warm_voice_has_the_same_stderr_with_and_without_json() {
+        let voice = format!("warm_nonexistent_{}", std::process::id());
+        let (stderr, _stdout) = assert_same_stderr_with_and_without_json(
+            3,
+            &["daemon", "start", "--warm-voice", &voice],
+            |tag| {
+                let inst = IsolatedInstance::new(tag);
+                seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
+                let decoy = seed_decoy_daemon_pidfile(&inst.dir);
+                let envs = owned_contract_envs(&inst);
+                ((inst, decoy), envs)
+            },
+        );
+        assert!(stderr.contains("Error:"), "{stderr}");
+    }
+
+    /// `daemon start` ante un daemon degradado lo para bajo `Parada del daemon`,
+    /// avisa con `⚠` debajo de esa etapa y sigue con el arranque; el puerto
+    /// ocupado lo hace fallar después. El stderr es el mismo con y sin `--json`.
+    #[cfg(windows)]
+    #[test]
+    fn daemon_start_degraded_has_the_same_stderr_with_and_without_json() {
+        let (stderr, _stdout) =
+            assert_same_stderr_with_and_without_json(6, &["daemon", "start"], |tag| {
+                let mut inst = IsolatedInstance::new(tag);
+                seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
+                let daemon = ForeignProcess::spawn();
+                let closed = DecoyPort::reserve();
+                seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{}", closed.port));
+                let holder = occupy_instance_port(&mut inst);
+                let envs = owned_contract_envs(&inst);
+                ((inst, daemon, closed, holder), envs)
+            });
+        let stop = stderr
+            .find("Parada del daemon")
+            .unwrap_or_else(|| panic!("falta la etapa de parada: {stderr}"));
+        let warning = stderr
+            .find("⚠ El daemon que estaba en marcha no respondía bien")
+            .unwrap_or_else(|| panic!("falta el aviso de degradado: {stderr}"));
+        assert!(stop < warning, "el aviso va bajo la parada: {stderr}");
+        assert!(stderr.contains("✗ Arranque"), "{stderr}");
+    }
+
+    /// `daemon stop` con una parada que no concluye deja `✗ Parada del daemon`,
+    /// el separador y `Error:` también con `--json`, y sale con 5.
+    #[test]
+    fn daemon_stop_still_running_has_the_same_stderr_with_and_without_json() {
+        let (stderr, stdout) =
+            assert_same_stderr_with_and_without_json(5, &["daemon", "stop"], |tag| {
+                let (sandbox, envs) = sandbox_unique_state(tag);
+                seed_unstoppable_daemon(sandbox.path());
+                (sandbox, envs)
+            });
+        assert!(stderr.contains("✗ Parada del daemon"), "{stderr}");
+        assert!(
+            stderr.contains("\nError: El daemon no se apagó"),
+            "{stderr}"
+        );
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+        assert_eq!(envelope["status"], "still_running", "{envelope}");
+        assert_eq!(envelope["stages"][0]["failed"], true, "{envelope}");
+    }
+
+    /// `daemon restart` sin el modelo de síntesis falla con `model_missing`
+    /// antes de parar nada: el daemon en marcha y su pidfile quedan intactos, y
+    /// el stderr es el mismo con y sin `--json`.
+    #[test]
+    fn daemon_restart_without_model_leaves_the_daemon_alone() {
+        let (stderr, _stdout) =
+            assert_same_stderr_with_and_without_json(4, &["daemon", "restart"], |tag| {
+                let (sandbox, envs) = sandbox_unique_state(tag);
+                seed_unstoppable_daemon(sandbox.path());
+                (sandbox, envs)
+            });
+        assert!(stderr.contains("Error: Falta el modelo"), "{stderr}");
+        assert!(!stderr.contains("Parada del daemon"), "{stderr}");
+
+        let (sandbox, envs) = sandbox_unique_state("restart-sin-modelo-pidfile");
+        seed_unstoppable_daemon(sandbox.path());
+        let pidfile = sandbox.path().join("data").join("daemon.pid");
+        let seeded = std::fs::read_to_string(&pidfile).expect("leer pidfile sembrado");
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, actual) = run_json_env(&["--json", "daemon", "restart"], &envs);
+        assert_eq!(code, 4, "{actual}");
+        assert_eq!(actual["reason"], "model_missing", "{actual}");
+        assert_eq!(
+            std::fs::read_to_string(&pidfile).expect("leer pidfile tras restart"),
+            seeded,
+            "sin modelo no se toca el daemon en marcha"
+        );
+    }
+
     /// `daemon stop` con un daemon ya muerto deja el directorio de datos sin
     /// rastro de él: se borran `daemon.pid` y también `daemon.ready`, cuyo PID
     /// (fuera de rango) no corresponde a ningún proceso vivo. Ambos ficheros
@@ -9496,9 +9620,83 @@ fn daemon_stop_without_daemon_reports_not_running() {
 fn daemon_stop_without_daemon_matches_fixture() {
     let (_sandbox, envs) = contract_sandbox("stop_fixture");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
+    let (code, mut actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
     assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
+    // La dirección real cambia en cada ejecución: se comprueba que es una
+    // dirección y se sustituye por el marcador de la fixture.
+    let addr = actual["context"]["addr"]
+        .as_str()
+        .unwrap_or_else(|| panic!("el contexto debe llevar addr: {actual}"))
+        .to_string();
+    assert!(addr.starts_with("127.0.0.1:"), "{addr}");
+    actual["context"]["addr"] = Value::String("<addr>".to_string());
     assert_eq!(without_instants(actual), fixture("cli_daemon_stop.json"));
+}
+
+/// Ejecuta `args` con y sin `--json`, cada uno en el sandbox que crea
+/// `prepare` (que devuelve la guarda del sandbox y sus variables de entorno), y
+/// comprueba que el código de salida es `expected_code` y que stderr es
+/// idéntico una vez quitadas las palabras que empiezan por dígito (duraciones,
+/// puertos y PIDs) y sin la línea de la ruta del log. Devuelve el stderr del modo texto, sin normalizar, y el
+/// stdout del modo JSON.
+fn assert_same_stderr_with_and_without_json<G>(
+    expected_code: i32,
+    args: &[&str],
+    mut prepare: impl FnMut(&str) -> (G, Vec<(String, String)>),
+) -> (String, String) {
+    let mut normalized = Vec::new();
+    let mut text_stderr = String::new();
+    let mut json_stdout = String::new();
+    for (tag, json) in [("paridad-texto", false), ("paridad-json", true)] {
+        let (_guard, envs) = prepare(tag);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut full = args.to_vec();
+        if json {
+            full.insert(0, "--json");
+        }
+        let (code, stdout, stderr) = run_capture(&full, &envs);
+        assert_eq!(code, expected_code, "json={json}: {stderr}");
+        normalized.push(
+            stderr
+                .lines()
+                // La ruta del log del daemon lleva el nombre del sandbox, que
+                // difiere entre las dos ejecuciones.
+                .filter(|line| !line.starts_with("Log del daemon:"))
+                .map(|line| {
+                    line.split_whitespace()
+                        .filter(|word| !word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>(),
+        );
+        if json {
+            json_stdout = stdout;
+        } else {
+            text_stderr = stderr;
+        }
+    }
+    assert_eq!(normalized[0], normalized[1], "--json no cambia stderr");
+    (text_stderr, json_stdout)
+}
+
+/// `daemon stop` sin daemon: cabecera y `✓ No había ningún daemon en marcha.`,
+/// sin etapa con tiempo, con el mismo stderr con y sin `--json`.
+#[test]
+fn daemon_stop_without_daemon_has_the_same_stderr_with_and_without_json() {
+    let (stderr, stdout) =
+        assert_same_stderr_with_and_without_json(0, &["daemon", "stop"], |tag| {
+            contract_sandbox(tag)
+        });
+    assert!(stderr.starts_with("Daemon · 127.0.0.1:"), "{stderr}");
+    assert!(
+        stderr.contains("✓ No había ningún daemon en marcha."),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("✗"), "{stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+    assert_eq!(envelope["status"], "not_running", "{envelope}");
+    assert!(envelope.get("stages").is_none(), "{envelope}");
 }
 
 /// `daemon stop` con el sondeo vivo tras el plazo emite el veredicto completo
@@ -9548,6 +9746,12 @@ fn daemon_restart_fails_with_daemon_stop_failed_when_stop_does_not_complete() {
     let (sandbox, envs) = sandbox_unique_state("restart-stop-failure");
     let dir = sandbox.path();
     seed_unstoppable_daemon(dir);
+    // `restart` comprueba el modelo antes de parar nada: se siembra para que
+    // llegue a la parada.
+    seed_pinned_models(
+        &dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR),
+        &["qwen3-tts-0.6b-base"],
+    );
     let pidfile = dir.join("data").join("daemon.pid");
     let seeded = std::fs::read_to_string(&pidfile).expect("leer pidfile sembrado");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

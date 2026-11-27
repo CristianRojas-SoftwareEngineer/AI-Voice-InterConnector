@@ -4,13 +4,7 @@
   "daemon": "stopped",
   "was_running": false,
   "daemon_fully_stopped": true,
-  "context": {},
-  "stages": [
-    {
-      "stage": "stopping",
-      "phase": null,
-      "transient": true
-    }
-  ],
-  "warnings": []
+  "context": {
+    "addr": "<addr>"
+  }
 }
