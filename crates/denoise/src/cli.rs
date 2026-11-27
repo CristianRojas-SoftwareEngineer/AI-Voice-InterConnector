@@ -4,12 +4,14 @@ use crate::errors::E;
 use crate::ffmpeg_io::{resolve_audio_bitrate, verify_ffmpeg};
 use crate::preset::{AudioBitrate, EgressParams, Preset, DEFAULT_PARAMS};
 use avi_core::exit_codes::{CliError, ExitCode};
+use avi_core::json_emitter::emit_raw_json;
 use avi_term::progress::PhaseProgress;
-use avi_term::style::{paint, Stream, Tone, ACTIVE, FAIL};
+use avi_term::report::{ContextValue, PhaseSpec, Pipeline};
+use avi_term::style::{paint, Stream, Tone, ACTIVE};
 use avi_term::{fmt, line, stage};
 use serde::Serialize;
+use serde_json::json;
 use std::collections::HashSet;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -92,7 +94,7 @@ pub struct Cli {
     #[arg(long = "dry-run")]
     pub dry_run: bool,
 
-    /// Emitir JSON Lines (JSONL) para scripting; en AVI lo activa el `--json` global
+    /// Emitir un único envelope JSON por stdout; en AVI lo activa el `--json` global
     #[arg(skip)]
     pub json: bool,
 
@@ -123,17 +125,18 @@ pub enum ItemStatus {
     DryRun,
 }
 
-/// Línea de log JSONL por archivo.
+/// Resultado de un archivo en el envelope JSON: la entrada, la salida, su
+/// estado y un mensaje.
 #[derive(Debug, Clone, Serialize)]
-pub struct JsonLogLine {
+pub struct FileReport {
     pub input: String,
     pub output: String,
     pub status: ItemStatus,
     pub message: String,
-    pub pct: u32,
 }
 
-/// Resumen final en JSONL y consola.
+/// Resumen final del lote: cuántos archivos salieron bien, fallaron o se
+/// omitieron.
 #[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub struct BatchSummary {
     pub ok: usize,
@@ -141,23 +144,27 @@ pub struct BatchSummary {
     pub skipped: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct JsonSummaryLine {
-    pub summary: BatchSummary,
-}
-
 /// Resultado de ejecutar la CLI de archivos.
 #[derive(Debug)]
 pub enum BatchOutcome {
-    /// El lote terminó sin fallos, o se mostró la versión.
+    /// El lote terminó sin fallos, o se mostró la versión. El lote ya emitió
+    /// su envelope con `--json`.
     Done,
-    /// La cancelación cooperativa detuvo el lote.
+    /// La cancelación cooperativa detuvo el lote. La etapa del archivo en
+    /// curso queda marcada como interrumpida en el registro, sin pintar: el
+    /// llamador pinta la interrupción y emite el envelope de error.
     Cancelled,
     /// El lote terminó con fallos. `code` es el peor código de salida del
     /// lote y `error` el error que lo resume, con el `reason` del primer
-    /// fallo de ese código. Las líneas por archivo y el resumen ya se
-    /// escribieron: el llamador solo escribe el error en texto.
-    Failed { code: i32, error: CliError },
+    /// fallo de ese código. `files` y `summary` son el resultado por archivo y
+    /// el resumen: el llamador los añade al envelope de error y escribe el
+    /// error en texto.
+    Failed {
+        code: i32,
+        error: CliError,
+        files: Vec<FileReport>,
+        summary: BatchSummary,
+    },
 }
 
 /// Error de validación de argumentos: `usage_error` con código 2.
@@ -513,14 +520,11 @@ pub fn resolve_outputs(
                     candidate_out = alt_path;
                     key = alt_key;
                     is_adjusted = true;
-                    // Con salida de máquina stderr queda vacío.
-                    if !line::machine_mode() {
-                        line::warn(format!(
-                            "La salida de {} coincide con otra del lote y se renombra a {}",
-                            input.display(),
-                            candidate_out.display()
-                        ));
-                    }
+                    line::warn(format!(
+                        "La salida de {} coincide con otra del lote y se renombra a {}",
+                        input.display(),
+                        candidate_out.display()
+                    ));
                     break;
                 }
                 counter += 1;
@@ -539,7 +543,10 @@ pub fn resolve_outputs(
     Ok(resolved_list)
 }
 
-/// Ejecuta el modo `--dry-run` puro sin I/O ni ffmpeg.
+/// Ejecuta el modo `--dry-run` puro sin I/O ni ffmpeg. Sin `--json` escribe el
+/// plan por stdout, una línea por archivo; con `--json` emite un único
+/// envelope `planned` con `files` y `summary`. El aviso de simulación sale por
+/// stderr en los dos modos.
 pub fn run_dry_run(
     items: &[ResolvedItem],
     overwrite: bool,
@@ -547,6 +554,7 @@ pub fn run_dry_run(
     json_mode: bool,
 ) -> Result<(), E> {
     let mut summary = BatchSummary::default();
+    let mut files = Vec::with_capacity(items.len());
 
     for item in items {
         let exists = item.output.exists();
@@ -572,15 +580,12 @@ pub fn run_dry_run(
         };
 
         if json_mode {
-            let line = JsonLogLine {
+            files.push(FileReport {
                 input: item.input.display().to_string(),
                 output: item.output.display().to_string(),
                 status,
                 message: reason.to_string(),
-                pct: 0,
-            };
-            println!("{}", serde_json::to_string(&line).unwrap());
-            let _ = std::io::stdout().flush();
+            });
         } else {
             println!(
                 "{} → {} ({})",
@@ -591,12 +596,9 @@ pub fn run_dry_run(
         }
     }
 
+    eprintln!("Simulación: no se ha modificado nada.");
     if json_mode {
-        let sum_line = JsonSummaryLine { summary };
-        println!("{}", serde_json::to_string(&sum_line).unwrap());
-        let _ = std::io::stdout().flush();
-    } else {
-        eprintln!("Simulación: no se ha modificado nada.");
+        emit_raw_json(json!({ "status": "planned", "files": files, "summary": summary }));
     }
 
     Ok(())
@@ -848,41 +850,66 @@ fn file_label(path: &Path) -> String {
 /// E/S) sobre 2 (entrada, destino o ausencia de audio); la cancelación (3)
 /// prevalece sobre ambos.
 ///
-/// En texto abre un único indicador para todo el lote: una etapa por archivo
-/// que deja `✓ [i/n] nombre  duración · tamaño`, y la ruta de cada archivo
-/// generado sale por stdout. Con `json_mode` solo se escriben las líneas JSONL.
+/// Abre un único indicador para todo el lote, con y sin `--json`: una etapa
+/// por archivo que deja `[i/n] ✓ nombre  duración · tamaño`, y la ruta de cada
+/// archivo generado sale como resultado `Archivo limpio: <ruta>`. Con un solo
+/// archivo la etapa no deja línea propia y queda el cierre.
+///
+/// Con `--json` stdout lleva un único envelope (`completed`, o el de error si
+/// el lote falló) con el resultado de cada archivo y el resumen; stderr es el
+/// mismo.
 pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutcome {
     let mut summary = BatchSummary::default();
+    let mut files: Vec<FileReport> = Vec::with_capacity(items.len());
     let mut worst_exit_code = 0;
     // Primer fallo de cada código: el resumen del lote usa el del peor.
     let mut first_failure_1: Option<CliError> = None;
     let mut first_failure_2: Option<CliError> = None;
     let total_items = items.len();
 
-    let progress = (!params.json_mode).then(PhaseProgress::new);
-    if !params.json_mode {
-        line::context(&format!(
+    // Una etapa por archivo, en una sola fase sin título.
+    avi_term::report::declare(Pipeline::new(vec![PhaseSpec {
+        id: "files",
+        title: "Limpieza",
+        short: "Limpieza",
+        stages: vec![&stage::DENOISING; total_items],
+    }]));
+    line::context_with(
+        &format!(
             "Limpieza de ruido · {}",
             fmt::count(total_items as u64, "archivo", "archivos")
-        ));
-    }
+        ),
+        &[("files", ContextValue::Int(total_items as u64))],
+    );
+    let progress = if total_items == 1 {
+        PhaseProgress::new().single_stage()
+    } else {
+        PhaseProgress::new()
+    };
+    // Los nombres de la columna se rellenan al del archivo más largo, porque
+    // el ancho del catálogo no los conoce.
+    let name_width = items
+        .iter()
+        .map(|item| file_label(&item.input).chars().count())
+        .max()
+        .unwrap_or(0);
 
-    for (idx, item) in items.iter().enumerate() {
+    for item in items {
         if let Some(flag) = &params.cancel_flag {
             if flag.load(Ordering::SeqCst) {
                 return BatchOutcome::Cancelled;
             }
         }
 
-        let item_idx = idx + 1;
         let in_str = item.input.display().to_string();
         let out_str = item.output.display().to_string();
-        let label = format!("[{}/{}] {}", item_idx, total_items, file_label(&item.input));
+        let name = file_label(&item.input);
+        let column = format!("{name:<name_width$}");
 
         // Un archivo que se va a omitir no abre etapa: no hay trabajo que medir.
         let expects_skip = params.skip_existing && item.output.exists();
-        if let (Some(progress), false) = (&progress, expects_skip) {
-            progress.phase_with(&stage::DENOISING, &label);
+        if !expects_skip {
+            progress.phase_with(&stage::DENOISING, &name);
         }
 
         let start_time = std::time::Instant::now();
@@ -907,31 +934,16 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutco
 
         let run = || {
             crate::pipeline::clean_file(&pipe_params, |pct, msg| {
-                if params.json_mode {
-                    let line = JsonLogLine {
-                        input: in_str.clone(),
-                        output: out_str.clone(),
-                        status: ItemStatus::Ok,
-                        message: msg.to_string(),
-                        pct,
-                    };
-                    println!("{}", serde_json::to_string(&line).unwrap());
-                    let _ = std::io::stdout().flush();
-                } else if let Some(progress) = &progress {
-                    // `skipped` lo emite el pipeline antes de devolver
-                    // `Skipped`; ese caso no abre etapa y no se pinta.
-                    if !expects_skip {
-                        progress.live(live_line(&label, pct, msg, start_time.elapsed()));
-                    }
+                // `skipped` lo emite el pipeline antes de devolver
+                // `Skipped`; ese caso no abre etapa y no se pinta.
+                if !expects_skip {
+                    progress.live(live_line(&name, pct, msg, start_time.elapsed()));
                 }
             })
         };
         // El repintado periódico mantiene el tiempo y el latido sin terminal
         // aunque el pipeline tarde entre dos avisos de avance.
-        let result = match &progress {
-            Some(progress) => progress.while_running(run),
-            None => run(),
-        };
+        let result = progress.while_running(run);
 
         let elapsed = start_time.elapsed();
 
@@ -941,57 +953,39 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutco
                 let size_bytes = std::fs::metadata(&item.output)
                     .map(|m| m.len())
                     .unwrap_or(0);
-
-                if params.json_mode {
-                    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-                    let line = JsonLogLine {
-                        input: in_str,
-                        output: out_str,
-                        status: ItemStatus::Ok,
-                        message: format!("{:.2} MB, {:.1}s", size_mb, elapsed.as_secs_f64()),
-                        pct: 100,
-                    };
-                    println!("{}", serde_json::to_string(&line).unwrap());
-                    let _ = std::io::stdout().flush();
-                } else if let Some(progress) = &progress {
-                    progress.done_as(&label);
-                    progress.note(&fmt::bytes(size_bytes));
-                    progress.result(None, &out_str);
-                }
+                let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                files.push(FileReport {
+                    input: in_str,
+                    output: out_str.clone(),
+                    status: ItemStatus::Ok,
+                    message: format!("{:.2} MB, {:.1}s", size_mb, elapsed.as_secs_f64()),
+                });
+                progress.done_as(&column);
+                progress.note(&fmt::bytes(size_bytes));
+                progress.result(Some("Archivo limpio"), &out_str);
             }
             Ok(crate::pipeline::ProcessStatus::Skipped) => {
                 summary.skipped += 1;
-
-                if params.json_mode {
-                    let line = JsonLogLine {
-                        input: in_str,
-                        output: out_str,
-                        status: ItemStatus::Skipped,
-                        message: "skipped".to_string(),
-                        pct: 0,
-                    };
-                    println!("{}", serde_json::to_string(&line).unwrap());
-                    let _ = std::io::stdout().flush();
-                } else if let Some(progress) = &progress {
-                    progress.discard_stage();
-                    eprintln!(
-                        "{}",
-                        paint(
-                            Stream::Stderr,
-                            Tone::Dim,
-                            &format!("– {label}: ya existe la salida; se omite.")
-                        )
-                    );
-                }
+                files.push(FileReport {
+                    input: in_str,
+                    output: out_str,
+                    status: ItemStatus::Skipped,
+                    message: "skipped".to_string(),
+                });
+                // Un archivo omitido no deja etapa viva, pero sí su línea `○`
+                // con el motivo y su lugar en la numeración.
+                progress.discard_stage();
+                progress.skip_as(&stage::DENOISING, &name, "ya existe la salida");
             }
             Err(e) => {
                 summary.failed += 1;
 
                 let code = e.exit_code();
                 if code == 3 {
-                    if let Some(progress) = &progress {
-                        progress.discard_stage();
-                    }
+                    // La cancelación deja la etapa como interrumpida; quien
+                    // llama pinta `✗ <archivo> · interrumpido` y el cierre.
+                    progress.done_as(&name);
+                    progress.interrupt();
                     return BatchOutcome::Cancelled;
                 }
                 if code == 1 || (code == 2 && worst_exit_code != 1) {
@@ -1006,34 +1000,19 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutco
                     *slot = Some(e.to_cli_error());
                 }
 
-                if params.json_mode {
-                    let line = JsonLogLine {
-                        input: in_str,
-                        output: out_str,
-                        status: ItemStatus::Failed,
-                        message: e.to_string(),
-                        pct: 100,
-                    };
-                    println!("{}", serde_json::to_string(&line).unwrap());
-                    let _ = std::io::stdout().flush();
-                } else if let Some(progress) = &progress {
-                    progress.discard_stage();
-                    eprintln!(
-                        "{} {label}: {}",
-                        paint(Stream::Stderr, Tone::Error, FAIL),
-                        fmt::sentence(&e.to_string())
-                    );
-                }
+                files.push(FileReport {
+                    input: in_str,
+                    output: out_str,
+                    status: ItemStatus::Failed,
+                    message: e.to_string(),
+                });
+                // La etapa queda como fallida con el nombre del archivo y su
+                // causa, como aviso bajo ella.
+                progress.done_as(&column);
+                progress.fail_current();
+                line::warn(fmt::sentence(&e.to_string()));
             }
         }
-    }
-
-    if params.json_mode {
-        let sum_line = JsonSummaryLine {
-            summary: summary.clone(),
-        };
-        println!("{}", serde_json::to_string(&sum_line).unwrap());
-        let _ = std::io::stdout().flush();
     }
 
     if worst_exit_code != 0 {
@@ -1059,27 +1038,33 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutco
             ),
         );
         error.detail = first.and_then(|first| first.detail);
+        // El indicador termina sin cierre: el error va detrás del separador.
+        progress.close();
         return BatchOutcome::Failed {
             code: worst_exit_code,
             error,
+            files,
+            summary,
         };
     }
 
-    if let Some(progress) = progress {
-        let mut extra = fmt::count(summary.ok as u64, "archivo limpio", "archivos limpios");
-        if summary.skipped > 0 {
-            extra.push_str(&format!(
-                ", {}",
-                fmt::count(summary.skipped as u64, "omitido", "omitidos")
-            ));
-        }
-        progress.finish("Limpieza de ruido completada", &[extra]);
+    let mut extra = fmt::count(summary.ok as u64, "archivo limpio", "archivos limpios");
+    if summary.skipped > 0 {
+        extra.push_str(&format!(
+            ", {}",
+            fmt::count(summary.skipped as u64, "omitido", "omitidos")
+        ));
+    }
+    progress.finish("Limpieza de ruido completada", &[extra]);
+    if params.json_mode {
+        emit_raw_json(json!({ "status": "completed", "files": files, "summary": summary }));
     }
 
     BatchOutcome::Done
 }
 
-/// Línea activa de un archivo: `… [i/n] nombre  42 %  mensaje  duración`.
+/// Línea activa de un archivo: `● nombre  42 %  mensaje  duración`. El prefijo
+/// `[i/n]` lo añade el indicador.
 fn live_line(label: &str, pct: u32, message: &str, elapsed: std::time::Duration) -> String {
     format!(
         "{ACTIVE} {label}  {pct:>3} %  {message}  {}",

@@ -1856,18 +1856,60 @@ fn handle_denoise(json_mode: bool, args: denoise::cli::Cli) -> Result<Outcome, C
     )?;
     match outcome {
         BatchOutcome::Done => Ok(Outcome::Done),
-        BatchOutcome::Cancelled => {
-            if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
-                Ok(Outcome::Verdict(ExitCode::Interrupted.code()))
+        // El lote ya dejó la etapa en curso como interrumpida y borró sus
+        // temporales: aquí se pinta la interrupción y se emite su envelope.
+        BatchOutcome::Cancelled if cancel_flag.load(std::sync::atomic::Ordering::SeqCst) => {
+            let untouched = !avi_term::report::snapshot().has_permanent_stage();
+            avi_term::line::special_closing(if untouched {
+                avi_term::line::SpecialClosing::NothingModified
             } else {
-                Ok(Outcome::Verdict(3))
+                avi_term::line::SpecialClosing::Interrupted
+            });
+            if json_mode {
+                let err = CliError::new(
+                    ExitCode::Interrupted,
+                    "interrupted",
+                    "Interrumpido por el usuario.",
+                );
+                let mut envelope = json!({
+                    "error": error_envelope_text(&err),
+                    "reason": err.reason,
+                });
+                if untouched && avi_term::report::snapshot().context.is_some() {
+                    envelope["stages"] = json!([]);
+                }
+                emit_raw_json(envelope);
             }
+            Ok(Outcome::Verdict(ExitCode::Interrupted.code()))
         }
-        // El lote ya escribió sus líneas por archivo: en `--json` no se
-        // escribe un segundo documento y en texto solo el error.
-        BatchOutcome::Failed { code, error } => {
-            if !json_mode {
-                print_error_text(&error);
+        // Una cancelación sin la bandera de Ctrl+C sale con su código 3.
+        BatchOutcome::Cancelled => {
+            let err = denoise::errors::E::ECancelled.to_cli_error();
+            print_error_text(&err);
+            if json_mode {
+                emit_raw_json(json!({
+                    "error": error_envelope_text(&err),
+                    "reason": err.reason,
+                }));
+            }
+            Ok(Outcome::Verdict(3))
+        }
+        // El lote ya escribió su estructura por stderr: aquí va el error en
+        // texto y, con `--json`, su envelope con el resultado por archivo.
+        BatchOutcome::Failed {
+            code,
+            error,
+            files,
+            summary,
+        } => {
+            print_error_text(&error);
+            if json_mode {
+                emit_raw_json(json!({
+                    "error": error_envelope_text(&error),
+                    "reason": error.reason,
+                    "files": files,
+                    "summary": summary,
+                }));
             }
             Ok(Outcome::Verdict(code))
         }
@@ -4515,9 +4557,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 .map_err(speech_find_error)?
             {
                 Some(entry) => {
-                    avi_term::line::context(&format!(
-                        "Reproducción del audio sintetizado {label} · voz {voice}"
-                    ));
+                    avi_term::line::context_with(
+                        &format!("Reproducción del audio sintetizado {label} · voz {voice}"),
+                        &[
+                            ("label", text_value(label.as_str())),
+                            ("voice", text_value(voice.as_str())),
+                        ],
+                    );
                     // Única etapa del comando: no deja su línea y queda solo el cierre.
                     let progress = PhaseProgress::new().single_stage();
                     // Patrón de bloque externo: el cierre del indicador se hace
@@ -4562,6 +4608,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             let label = Label::parse(&label).map_err(invalid_name_cli_error)?;
             ensure_voice_exists(&voice)?;
             let speech_store = open_speech_store()?;
+            avi_term::line::context_with(
+                &format!("Borrado del audio sintetizado {label} · voz {voice}"),
+                &[
+                    ("label", text_value(label.as_str())),
+                    ("voice", text_value(voice.as_str())),
+                ],
+            );
             // Se pregunta antes de borrar. El plan nombra el WAV sin leer los
             // metadatos, de modo que un audio con metadatos dañados también se
             // puede borrar. Si el WAV no existe, `remove` informa del fallo.
@@ -4576,7 +4629,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let mut input = stdin.lock();
                     // La espera de la respuesta no cuenta como trabajo del comando.
                     avi_term::report::begin_question();
-                    let decision = lifecycle::confirm::confirm(
+                    // La cancelación la pinta el cierre especial detrás del
+                    // separador, no el texto de `confirm`.
+                    let decision = lifecycle::confirm::confirm_without_cancel_notice(
                         &lifecycle::confirm::Confirmation {
                             kind: lifecycle::confirm::Kind::Destructive,
                             question: "¿Borrar este audio sintetizado?",
@@ -4596,25 +4651,34 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     decision.map_err(lifecycle_error_to_cli)?
                 };
                 if decision == lifecycle::confirm::Decision::Cancelled {
+                    // Sin cuerpo: separador y `Cancelado; no se ha borrado nada.`
+                    avi_term::line::special_closing(avi_term::line::SpecialClosing::Cancelled);
                     if json_mode {
-                        emit_raw_json(
-                            json!({ "status": "cancelled", "label": label, "voice": voice }),
-                        );
+                        emit_raw_json(json!({
+                            "status": "cancelled",
+                            "label": label,
+                            "voice": voice,
+                            "stages": [],
+                        }));
                     }
-                    // `confirm::confirm` ya escribió «Cancelado; no se ha borrado
-                    // nada.» por stderr.
                     return Ok(());
                 }
             }
-            speech_store
+            // Única etapa del comando: no deja su línea y queda solo el cierre.
+            let progress = PhaseProgress::new().single_stage();
+            progress.phase(&stage::REMOVING);
+            let result = speech_store
                 .remove(&voice, &label)
-                .map_err(|e| CliError::new(ExitCode::NotFound, "speech_not_found", e))?;
+                .map_err(|e| CliError::new(ExitCode::NotFound, "speech_not_found", e));
+            finish_progress(
+                progress,
+                &result,
+                &format!("Audio sintetizado {label} de la voz {voice} borrado"),
+                |()| Vec::new(),
+            );
+            result?;
             if json_mode {
                 emit_raw_json(json!({ "status": "removed", "label": label, "voice": voice }));
-            } else {
-                avi_term::line::ok(&format!(
-                    "Audio sintetizado {label} de la voz {voice} borrado."
-                ));
             }
             Ok(())
         }
@@ -7001,8 +7065,11 @@ async fn consume_ndjson_stream(
                 }
                 // Los textos del doblaje salen por stdout en cuanto llegan, antes
                 // de que suene el audio. Cada uno cierra la etapa que lo produjo.
+                // La síntesis solo anuncia la traducción.
                 Some(kind @ ("transcript" | "translation"))
-                    if matches!(expected, StreamResult::Dub) =>
+                    if matches!(expected, StreamResult::Dub)
+                        || (kind == "translation"
+                            && matches!(expected, StreamResult::Synthesize)) =>
                 {
                     let text = ev["text"].as_str().ok_or_else(|| {
                         CliError::new(
@@ -7226,12 +7293,9 @@ async fn synthesize_via_daemon(
     // Texto realmente sintetizado: el que ven el menú y el sidecar (paridad
     // con la ruta directa, que guarda el traducido).
     let final_text = first_take.translated.as_str();
-    // El daemon solo entrega el texto traducido en el evento final: la
-    // traducción se muestra al terminar el stream.
+    // El resultado `Traducción:` ya salió bajo su etapa al llegar el evento
+    // `translation`.
     let translated = (source_language != target_language).then(|| final_text.to_string());
-    if let Some(translated) = &translated {
-        progress.result(Some("Traducción"), translated);
-    }
     // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
     let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
@@ -7344,10 +7408,9 @@ async fn say_via_daemon(
         delivery,
     )
     .await?;
+    // El resultado `Traducción:` ya salió bajo su etapa al llegar el evento
+    // `translation`.
     let translated = (source_language != target_language).then_some(synthesis.translated);
-    if let Some(translated) = &translated {
-        progress.result(Some("Traducción"), translated);
-    }
     Ok(SayOutcome {
         stats: synthesis.stats,
         translated,

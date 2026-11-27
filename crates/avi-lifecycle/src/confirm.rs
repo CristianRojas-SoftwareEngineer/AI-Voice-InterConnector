@@ -136,6 +136,26 @@ pub fn confirm<R: BufRead>(
     input: &mut R,
     out: &mut dyn Write,
 ) -> anyhow::Result<Decision> {
+    confirm_with(request, input, out, true)
+}
+
+/// Como [`confirm`], pero al cancelar no escribe el texto de cancelación: lo
+/// pinta el llamador detrás del separador, con el cierre especial de
+/// cancelación del indicador de etapas.
+pub fn confirm_without_cancel_notice<R: BufRead>(
+    request: &Confirmation<'_>,
+    input: &mut R,
+    out: &mut dyn Write,
+) -> anyhow::Result<Decision> {
+    confirm_with(request, input, out, false)
+}
+
+fn confirm_with<R: BufRead>(
+    request: &Confirmation<'_>,
+    input: &mut R,
+    out: &mut dyn Write,
+    announce_cancellation: bool,
+) -> anyhow::Result<Decision> {
     print_plan(request, out)?;
 
     if request.dry_run {
@@ -172,7 +192,9 @@ pub fn confirm<R: BufRead>(
     if affirmative(&line, request.kind) {
         Ok(Decision::Proceed)
     } else {
-        writeln!(out, "{}", request.kind.cancellation())?;
+        if announce_cancellation {
+            writeln!(out, "{}", request.kind.cancellation())?;
+        }
         Ok(Decision::Cancelled)
     }
 }
@@ -270,6 +292,24 @@ mod tests {
         assert_eq!(PlanEntry::of(&dir).size, Some(8));
         assert_eq!(PlanEntry::of(dir.join("a")).size, Some(5));
         assert_eq!(PlanEntry::of(dir.join("no_existe")).size, None);
+    }
+
+    /// Sin aviso de cancelación, el prompt queda como último texto escrito y la
+    /// decisión sigue siendo `Cancelled`.
+    #[test]
+    fn cancelling_without_notice_leaves_only_the_prompt() {
+        let summary = vec!["Se borrará algo:".to_string()];
+        let mut out = Vec::new();
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::Destructive, &summary, &[], false, false, true),
+            &mut Cursor::new("n\n"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(decision, Decision::Cancelled);
+        let out = String::from_utf8(out).unwrap();
+        assert!(out.ends_with("¿Hacer la prueba? [s/N] "), "{out:?}");
+        assert!(!out.contains("Cancelado"), "{out:?}");
     }
 
     /// Las cuatro celdas de la tabla de confirmaciones con el predicado de terminal

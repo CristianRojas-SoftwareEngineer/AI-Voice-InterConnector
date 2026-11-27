@@ -1,6 +1,7 @@
-//! Test de reportería — verifica orden [i/N], JSONL parseable, summary.
+//! Test de reportería — verifica el orden [i/N], el resultado por archivo del
+//! envelope único y el resumen.
 
-use denoise::cli::{BatchSummary, ItemStatus, JsonLogLine, JsonSummaryLine, ResolvedItem};
+use denoise::cli::{BatchSummary, FileReport, ItemStatus, ResolvedItem};
 use std::path::PathBuf;
 
 #[test]
@@ -37,16 +38,15 @@ fn test_reporting_order() {
 }
 
 #[test]
-fn test_jsonl_parseable() {
-    let line = JsonLogLine {
+fn test_file_report_is_parseable() {
+    let file = FileReport {
         input: "input.mp4".to_string(),
         output: "output.mp4".to_string(),
         status: ItemStatus::Ok,
         message: "completado".to_string(),
-        pct: 100,
     };
 
-    let serialized = serde_json::to_string(&line).expect("Serialización JSON exitosa");
+    let serialized = serde_json::to_string(&file).expect("Serialización JSON exitosa");
     let deserialized: serde_json::Value =
         serde_json::from_str(&serialized).expect("JSON parseable");
 
@@ -54,7 +54,8 @@ fn test_jsonl_parseable() {
     assert_eq!(deserialized["output"], "output.mp4");
     assert_eq!(deserialized["status"], "ok");
     assert_eq!(deserialized["message"], "completado");
-    assert_eq!(deserialized["pct"], 100);
+    // El avance por archivo ya no viaja en el JSON.
+    assert!(deserialized.get("pct").is_none());
 }
 
 #[test]
@@ -65,45 +66,34 @@ fn test_summary_correct() {
         skipped: 2,
     };
 
-    let summary_line = JsonSummaryLine { summary };
-    let serialized = serde_json::to_string(&summary_line).expect("Serialización JSON exitosa");
+    let serialized = serde_json::to_string(&summary).expect("Serialización JSON exitosa");
     let deserialized: serde_json::Value =
         serde_json::from_str(&serialized).expect("JSON parseable");
 
-    assert_eq!(deserialized["summary"]["ok"], 4);
-    assert_eq!(deserialized["summary"]["failed"], 1);
-    assert_eq!(deserialized["summary"]["skipped"], 2);
+    assert_eq!(deserialized["ok"], 4);
+    assert_eq!(deserialized["failed"], 1);
+    assert_eq!(deserialized["skipped"], 2);
 }
 
 #[test]
-fn test_no_animation_with_json() {
-    // Verifica que en modo JSON el status de skipped produce pct=0
-    let skipped_line = JsonLogLine {
-        input: "test.mp4".to_string(),
-        output: "test_denoised.mp4".to_string(),
-        status: ItemStatus::Skipped,
-        message: "skipped".to_string(),
-        pct: 0,
-    };
-
-    let serialized = serde_json::to_string(&skipped_line).unwrap();
-    assert!(!serialized.contains("\x1b[")); // Sin secuencias de escape ANSI
-    assert!(serialized.contains(r#""pct":0"#));
-    assert!(serialized.contains(r#""status":"skipped""#));
-}
-
-#[test]
-fn test_no_animation_without_tty() {
-    // Dry run status formatting
-    let dry_run_line = JsonLogLine {
-        input: "sample.mp4".to_string(),
-        output: "sample_denoised.mp4".to_string(),
-        status: ItemStatus::DryRun,
-        message: "would process".to_string(),
-        pct: 0,
-    };
-
-    let serialized = serde_json::to_string(&dry_run_line).unwrap();
-    assert!(serialized.contains(r#""status":"dry-run""#));
-    assert!(serialized.contains(r#""pct":0"#));
+fn test_status_names_are_kebab_case() {
+    for (status, name) in [
+        (ItemStatus::Ok, "ok"),
+        (ItemStatus::Failed, "failed"),
+        (ItemStatus::Skipped, "skipped"),
+        (ItemStatus::DryRun, "dry-run"),
+    ] {
+        let file = FileReport {
+            input: "a.mp4".to_string(),
+            output: "b.mp4".to_string(),
+            status,
+            message: String::new(),
+        };
+        let serialized = serde_json::to_string(&file).unwrap();
+        assert!(!serialized.contains("\x1b["));
+        assert!(
+            serialized.contains(&format!(r#""status":"{name}""#)),
+            "{serialized}"
+        );
+    }
 }

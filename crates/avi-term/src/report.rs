@@ -87,12 +87,23 @@ impl Pipeline {
     /// Fase (identificador) y número de orden (desde 1) de la etapa con ese
     /// `label`, si el recorrido la incluye.
     pub fn locate(&self, label: &str) -> Option<(&'static str, usize)> {
+        self.locate_nth(label, 0)
+    }
+
+    /// Como [`Pipeline::locate`], para la aparición número `skip + 1` de la
+    /// etapa con ese `label`: sirve a los comandos que declaran la misma etapa
+    /// varias veces, como una limpieza por archivo.
+    pub fn locate_nth(&self, label: &str, skip: usize) -> Option<(&'static str, usize)> {
         let mut number = 0;
+        let mut seen = 0;
         for phase in &self.phases {
             for stage in &phase.stages {
                 number += 1;
                 if stage.label == label {
-                    return Some((phase.id, number));
+                    if seen == skip {
+                        return Some((phase.id, number));
+                    }
+                    seen += 1;
                 }
             }
         }
@@ -407,17 +418,19 @@ impl Report {
     /// desenlace `Transient` y una permanente sin número. Una etapa que ya se
     /// abrió con número en este proceso y se vuelve a abrir (la acción extra de
     /// un menú, como volver a reproducir) es una repetición: queda sin fase ni
-    /// número, para que el recorrido declarado no la cuente dos veces.
+    /// número, para que el recorrido declarado no la cuente dos veces. Si el
+    /// recorrido la declara varias veces (una limpieza por archivo), cada
+    /// apertura toma la siguiente aparición declarada.
     pub(crate) fn open_stage(&mut self, stage: &'static Stage, start: Instant) -> u64 {
-        let repeated = self
+        let numbered_before = self
             .stages
             .iter()
-            .any(|opened| opened.label == stage.label && opened.number.is_some());
+            .filter(|opened| opened.label == stage.label && opened.number.is_some())
+            .count();
         let located = self
             .pipeline
             .as_ref()
-            .filter(|_| !repeated)
-            .and_then(|pipeline| pipeline.locate(stage.label));
+            .and_then(|pipeline| pipeline.locate_nth(stage.label, numbered_before));
         let outcome = if located.is_none() && stage.transient {
             StageOutcome::Transient
         } else {
@@ -484,9 +497,10 @@ impl Report {
     }
 
     /// Registra una etapa omitida con `start == end == at`.
-    pub(crate) fn skip_stage(&mut self, stage: &'static Stage, reason: &str, at: Instant) {
+    pub(crate) fn skip_stage(&mut self, stage: &'static Stage, reason: &str, at: Instant) -> u64 {
         let id = self.open_stage(stage, at);
         self.close_stage(id, at, Some(StageOutcome::Skipped(reason.to_string())));
+        id
     }
 
     /// Marca como interrumpidas, con cierre en `at`, las etapas que siguen
@@ -742,6 +756,47 @@ mod tests {
         assert_eq!(snap.stages[1].number, None);
         assert_eq!(snap.stages[1].phase, None);
         assert_eq!(snap.stages[1].outcome, StageOutcome::Ok);
+    }
+
+    /// Un recorrido que declara la misma etapa varias veces (una limpieza por
+    /// archivo) numera cada apertura con la siguiente aparición, también las
+    /// omitidas, y la apertura que excede lo declarado queda sin número.
+    #[test]
+    fn a_stage_declared_several_times_numbers_each_opening() {
+        let _g = test_guard();
+        declare(Pipeline::new(vec![PhaseSpec {
+            id: "files",
+            title: "Limpieza",
+            short: "Limpieza",
+            stages: vec![&stage::DENOISING, &stage::DENOISING, &stage::DENOISING],
+        }]));
+        let progress = PhaseProgress::for_test(Some("1"), false);
+        progress.phase(&stage::DENOISING);
+        progress.done_as("uno.wav");
+        progress.end_stage();
+        progress.skip_as(&stage::DENOISING, "dos.wav", "ya existía");
+        progress.phase(&stage::DENOISING);
+        progress.done_as("tres.wav");
+        progress.end_stage();
+        progress.phase(&stage::DENOISING);
+        progress.end_stage();
+        let numbers: Vec<_> = snapshot().stages.iter().map(|s| s.number).collect();
+        assert_eq!(numbers, vec![Some(1), Some(2), Some(3), None]);
+        let names: Vec<_> = snapshot().stages.iter().map(|s| s.name.clone()).collect();
+        assert_eq!(&names[..3], ["uno.wav", "dos.wav", "tres.wav"]);
+    }
+
+    /// `interrupt` deja la etapa viva como interrumpida y no vuelve a pintarla
+    /// al soltar el indicador.
+    #[test]
+    fn interrupt_marks_the_open_stage_without_painting_it_again() {
+        let _g = test_guard();
+        let progress = PhaseProgress::for_test(Some("1"), false);
+        progress.phase(&stage::DENOISING);
+        progress.interrupt();
+        let record = snapshot().stages.remove(0);
+        assert_eq!(record.outcome, StageOutcome::Interrupted);
+        assert!(record.end.is_some());
     }
 
     #[test]

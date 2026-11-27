@@ -422,9 +422,23 @@ impl PhaseProgress {
     /// `○ <Nombre> · <motivo>` (con el título de su fase si le toca). No abre ni
     /// cierra ninguna etapa viva.
     pub fn skip(&self, stage: &'static Stage, reason: &str) {
+        self.skip_named(stage, None, reason);
+    }
+
+    /// Como [`PhaseProgress::skip`], con `name` en la columna de la etapa en
+    /// lugar del nombre del catálogo: sirve a las etapas que se nombran por su
+    /// objeto, como un archivo.
+    pub fn skip_as(&self, stage: &'static Stage, name: &str, reason: &str) {
+        self.skip_named(stage, Some(name), reason);
+    }
+
+    fn skip_named(&self, stage: &'static Stage, name: Option<&str>, reason: &str) {
         let (mut inner, mut rep) = self.lock_both();
         let at = Instant::now();
-        rep.skip_stage(stage, reason, at);
+        let id = rep.skip_stage(stage, reason, at);
+        if let Some(name) = name {
+            rep.rename_stage(id, name, true);
+        }
         if !self.enabled {
             return;
         }
@@ -742,6 +756,22 @@ impl PhaseProgress {
     pub fn fail(self) {
         // El `Drop` hace el trabajo: un indicador soltado sin `close`,
         // `finish` ni `fail` equivale a `fail`.
+    }
+
+    /// Termina por una interrupción: deja las etapas vivas marcadas como
+    /// interrumpidas en el registro y borra la línea activa, sin pintar nada
+    /// más. Quien interrumpe pinta después, con
+    /// [`line::special_closing`] (`Interrupted`), el `✗ <Nombre> <duración> ·
+    /// interrumpido`, el separador y el cierre.
+    pub fn interrupt(self) {
+        let (mut inner, mut rep) = self.lock_both();
+        inner.current = None;
+        inner.overlapped = None;
+        inner.closed = true;
+        rep.interrupt_open_stages();
+        if self.enabled && self.tty {
+            self.clear_line();
+        }
     }
 }
 

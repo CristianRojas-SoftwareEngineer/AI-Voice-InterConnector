@@ -4507,6 +4507,161 @@ mod tts {
         assert!(!wav.exists());
     }
 
+    /// `speech remove --yes` pinta la cabecera, el plan, la etapa única `Borrado` sin línea
+    /// propia y el cierre con su duración; con `--json` el stderr es el mismo y el envelope
+    /// lleva `context`, `total_ms` y la etapa.
+    #[test]
+    fn speech_remove_yes_renders_single_stage_and_keeps_stderr_with_json() {
+        let inst = IsolatedInstance::new("speech_remove_render");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("render");
+        let a = inst.contract_args();
+
+        create_utterance(&inst, "default", &label);
+        let (code, text_stdout, text_stderr) =
+            run_capture(&["speech", "remove", "--label", &label, "--yes"], &a);
+        assert_eq!(code, 0, "{text_stderr}");
+        assert!(text_stdout.is_empty(), "{text_stdout}");
+
+        create_utterance(&inst, "default", &label);
+        let (code, json_stdout, json_stderr) = run_capture(
+            &["--json", "speech", "remove", "--label", &label, "--yes"],
+            &a,
+        );
+        assert_eq!(code, 0, "{json_stderr}");
+
+        let normalize = |text: &str| normalize_times(text, &inst.dir);
+        let text_stderr = normalize(&text_stderr);
+        assert_eq!(
+            text_stderr,
+            normalize(&json_stderr),
+            "--json no cambia stderr"
+        );
+        let lines: Vec<&str> = text_stderr.lines().collect();
+        assert_eq!(
+            lines[0],
+            format!("Borrado del audio sintetizado {label} · voz default"),
+            "{text_stderr}"
+        );
+        assert_eq!(
+            lines.last().copied(),
+            Some(format!("✓ Audio sintetizado {label} de la voz default borrado en <t>").as_str()),
+            "{text_stderr}"
+        );
+        assert!(
+            !text_stderr.contains("✓ Borrado"),
+            "la etapa única no deja línea propia: {text_stderr}"
+        );
+
+        let envelope: Value = serde_json::from_str(json_stdout.trim())
+            .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+        assert_eq!(envelope["status"], "removed", "{envelope}");
+        assert_eq!(envelope["context"]["label"], label.as_str(), "{envelope}");
+        assert_eq!(envelope["context"]["voice"], "default", "{envelope}");
+        assert!(envelope["total_ms"].is_u64(), "{envelope}");
+        let stages = envelope["stages"].as_array().expect("stages es una lista");
+        let removing: Vec<_> = stages.iter().filter(|s| s["stage"] == "removing").collect();
+        assert_eq!(removing.len(), 1, "{envelope}");
+    }
+
+    /// `speech remove` sin terminal y sin `--yes` deja la cabecera y el error detrás del
+    /// separador solo si hubo etapas; aquí, ninguna: cabecera, plan y error, sin borrar.
+    #[test]
+    fn speech_remove_without_terminal_keeps_the_header_and_the_audio() {
+        let inst = IsolatedInstance::new("speech_remove_noterm_header");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("noterm");
+        create_utterance(&inst, "default", &label);
+        let (code, _, stderr) = run_capture(
+            &["speech", "remove", "--label", &label],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.starts_with(&format!(
+                "Borrado del audio sintetizado {label} · voz default\n"
+            )),
+            "{stderr}"
+        );
+        assert!(
+            inst.dir
+                .join("speech")
+                .join("default")
+                .join(format!("{label}.wav"))
+                .is_file(),
+            "no se borra nada sin confirmar"
+        );
+    }
+
+    /// `speech play` es de etapa única: cabecera con el contexto, sin línea `✓` propia y cierre
+    /// `Reproducción completada`; con `--json` el stderr es el mismo y el envelope lleva el
+    /// contexto y la etapa.
+    #[test]
+    #[ignore = "requiere un dispositivo de salida de audio"]
+    fn speech_play_renders_single_stage_and_keeps_stderr_with_json() {
+        require_output_device();
+        let inst = IsolatedInstance::new("speech_play_render");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("play");
+        create_utterance(&inst, "default", &label);
+        let a = inst.contract_args();
+        let (code, _, text_stderr) = run_capture(&["speech", "play", "--label", &label], &a);
+        assert_eq!(code, 0, "{text_stderr}");
+        let (code, json_stdout, json_stderr) =
+            run_capture(&["--json", "speech", "play", "--label", &label], &a);
+        assert_eq!(code, 0, "{json_stderr}");
+        let normalize = |text: &str| normalize_times(text, &inst.dir);
+        let text_stderr = normalize(&text_stderr);
+        assert_eq!(
+            text_stderr,
+            normalize(&json_stderr),
+            "--json no cambia stderr"
+        );
+        let lines: Vec<&str> = text_stderr.lines().collect();
+        assert_eq!(
+            lines[0],
+            format!("Reproducción del audio sintetizado {label} · voz default"),
+            "{text_stderr}"
+        );
+        assert_eq!(
+            lines.last().copied(),
+            Some("✓ Reproducción completada en <t>"),
+            "{text_stderr}"
+        );
+        let envelope: Value = serde_json::from_str(json_stdout.trim()).expect("un único envelope");
+        assert_eq!(envelope["status"], "played", "{envelope}");
+        assert_eq!(envelope["context"]["label"], label.as_str(), "{envelope}");
+        assert_eq!(envelope["context"]["voice"], "default", "{envelope}");
+        assert!(envelope["total_ms"].is_u64(), "{envelope}");
+        assert_eq!(envelope["stages"][0]["stage"], "playing", "{envelope}");
+    }
+
+    /// `speech list --json` es una consulta: sin cabecera, sin `status` ni claves de etapas.
+    #[test]
+    fn speech_list_json_has_no_stage_keys() {
+        let inst = IsolatedInstance::new("speech_list_no_stages");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("nostages");
+        create_utterance(&inst, "default", &label);
+        let (code, stdout, stderr) =
+            run_capture(&["--json", "speech", "list"], &inst.contract_args());
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.is_empty(), "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        for key in ["status", "stages", "total_ms", "context", "warnings"] {
+            assert!(envelope.get(key).is_none(), "`{key}` sobra: {envelope}");
+        }
+        assert!(envelope["speech"].is_array(), "{envelope}");
+    }
+
     /// `speech list --voice default` filtra por voz existente (exit 0, solo esa voz).
     #[test]
     fn speech_list_filters_by_existing_voice() {
@@ -8015,35 +8170,42 @@ fn self_update_check_emits_positive_cli_contract_without_asset_download() {
     assert_eq!(server.download_counts(), (0, 0));
 }
 
-/// La simulación JSON de `speech denoise` emite JSONL sin envelope global y no requiere modelos.
+/// La simulación JSON de `speech denoise` emite un único envelope `planned` con `files` y
+/// `summary`, no requiere modelos y deja el mismo stderr que sin `--json`.
 #[cfg(feature = "native-denoise")]
 #[test]
-fn speech_denoise_dry_run_emits_jsonl_without_model() {
-    let (sandbox, envs) = contract_sandbox("speech_denoise_jsonl");
+fn speech_denoise_dry_run_emits_a_single_envelope_without_model() {
+    let (sandbox, envs) = contract_sandbox("speech_denoise_envelope");
     let input = sandbox.path().join("voz.wav");
     std::fs::write(&input, b"sin necesidad de un WAV valido en dry-run").expect("crear entrada");
     let input = input.to_string_lossy().into_owned();
-    let args = ["--json", "speech", "denoise", input.as_str(), "--dry-run"];
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, stdout, stderr) = run_capture(&args, &envs);
+    let (code, stdout, stderr) = run_capture(
+        &["--json", "speech", "denoise", input.as_str(), "--dry-run"],
+        &envs,
+    );
     assert_eq!(code, 0, "{stderr}");
-    assert!(stderr.is_empty(), "{stderr}");
-    let lines: Vec<Value> = stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("cada línea debe ser JSON"))
-        .collect();
-    assert_eq!(lines.len(), 2, "{stdout}");
-    assert_eq!(lines[0]["status"], "dry-run");
-    assert!(
-        lines[0].get("schema_version").is_none(),
-        "la línea de item no lleva envelope: {}",
-        lines[0]
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{stdout}"));
+    assert_eq!(envelope["status"], "planned", "{envelope}");
+    assert_eq!(envelope["schema_version"], "7", "{envelope}");
+    assert_eq!(envelope["files"][0]["status"], "dry-run", "{envelope}");
+    assert_eq!(
+        envelope["files"][0]["message"], "would process",
+        "{envelope}"
     );
+    assert_eq!(envelope["summary"]["ok"], 1, "{envelope}");
+    assert_eq!(envelope["summary"]["failed"], 0, "{envelope}");
+
+    let (code, text_stdout, text_stderr) =
+        run_capture(&["speech", "denoise", input.as_str(), "--dry-run"], &envs);
+    assert_eq!(code, 0, "{text_stderr}");
+    assert_eq!(text_stderr, stderr, "--json no cambia stderr");
     assert!(
-        lines[1]["summary"].is_object(),
-        "la última línea es el resumen: {}",
-        lines[1]
+        text_stderr.contains("Simulación: no se ha modificado nada."),
+        "{text_stderr}"
     );
+    assert!(text_stdout.contains("se procesaría"), "{text_stdout}");
 }
 
 /// Un error de validación previo al lote de `speech denoise` sale con `--json` como un único
@@ -8080,7 +8242,7 @@ fn speech_denoise_validation_error_is_a_single_json_envelope() {
     );
 }
 
-/// La ejecución real limpia el WAV de tres segundos con DPDFNet y emite JSONL.
+/// La ejecución real limpia el WAV de tres segundos con DPDFNet y emite un único envelope.
 #[cfg(feature = "native-denoise")]
 #[test]
 #[ignore = "requiere DPDFNet provisionado y FFmpeg incluido junto al binario"]
@@ -8123,27 +8285,20 @@ fn speech_denoise_processes_real_wav_and_writes_output() {
     let envs = inst.args();
     let (code, stdout, stderr) = run_capture(&args, &envs);
     assert_eq!(code, 0, "{stderr}");
-    assert!(stderr.is_empty(), "{stderr}");
-    let lines: Vec<Value> = stdout
-        .lines()
-        .map(|line| serde_json::from_str(line).expect("cada línea JSONL válida"))
-        .collect();
-    let summary = lines
-        .iter()
-        .find(|line| line.get("summary").is_some())
-        .expect("debe existir línea de resumen");
-    let terminal = lines
-        .iter()
-        .rev()
-        .find(|line| line.get("status").and_then(Value::as_str) == Some("ok"))
-        .expect("debe existir registro terminal del archivo");
-    assert_eq!(summary["summary"]["ok"], 1);
-    assert_eq!(summary["summary"]["failed"], 0);
-    assert_eq!(summary["summary"]["skipped"], 0);
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{stdout}"));
+    assert_eq!(envelope["status"], "completed", "{envelope}");
+    assert_eq!(envelope["summary"]["ok"], 1);
+    assert_eq!(envelope["summary"]["failed"], 0);
+    assert_eq!(envelope["summary"]["skipped"], 0);
+    assert_eq!(envelope["context"]["files"], 1, "{envelope}");
+    assert_eq!(envelope["stages"][0]["stage"], "denoising", "{envelope}");
+    let terminal = &envelope["files"][0];
+    assert_eq!(terminal["status"], "ok", "{envelope}");
     let output = PathBuf::from(
         terminal["output"]
             .as_str()
-            .expect("output en registro terminal"),
+            .expect("output en el resultado del archivo"),
     );
     let reader = hound::WavReader::open(&output).expect("salida WAV legible");
     let spec = reader.spec();
@@ -10070,6 +10225,7 @@ fn synthesize_against_fake_daemon(tag: &str, json: bool, label: &str) -> (i32, S
     let fake = FakeDaemon::start_events(vec![
         serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
         serde_json::json!({ "event": "progress", "stage": "translate" }),
+        serde_json::json!({ "event": "translation", "text": "Hello there" }),
         serde_json::json!({ "event": "progress", "stage": "warming" }),
         serde_json::json!({ "event": "progress", "stage": "synthesis" }),
         silent_audio_event(1),
@@ -10128,6 +10284,21 @@ fn synthesize_daemon_renders_phases_and_keeps_stderr_with_json() {
             "falta `{expected}` en:\n{text_stderr}"
         );
     }
+    // La traducción sale bajo su etapa, no al terminar el stream.
+    let translating = lines
+        .iter()
+        .position(|line| line.starts_with("  [1/3] ✓ Traducción"))
+        .expect("etapa Traducción");
+    assert_eq!(
+        lines[translating + 1],
+        "        │ Traducción: Hello there",
+        "{text_stderr}"
+    );
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("Traducción: ")).count(),
+        1,
+        "la traducción sale una sola vez: {text_stderr}"
+    );
     assert!(
         text_stderr.contains(&"─".repeat(50)),
         "separador antes del cierre: {text_stderr}"
@@ -10353,6 +10524,7 @@ fn say_against_fake_daemon(tag: &str, json: bool) -> (i32, String, String) {
     let fake = FakeDaemon::start_events(vec![
         serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
         serde_json::json!({ "event": "progress", "stage": "translate" }),
+        serde_json::json!({ "event": "translation", "text": "Hello" }),
         serde_json::json!({ "event": "progress", "stage": "synthesis" }),
         silent_audio_event(1),
         silent_audio_event(1),
