@@ -186,6 +186,36 @@ El CLI codifica el PCM mono capturado (48 kHz con `--denoise`, 24 kHz sin él) a
 
 En terminales interactivas (TTY), la omisión de `--duration` activa el modo push-to-talk acotado por `MAX_CLONE_REFERENCE_SECS` (30 s). En entornos no interactivos (no-TTY), se exige `--duration` explícito (1..30 s) para evitar bloqueos desatendidos.
 
+### 6.4 Duración de la referencia
+
+La voz clonada no guarda el audio de referencia: `reference.qvoice` contiene un x-vector de 1024 valores, una huella del locutor de tamaño fijo que el motor usa en cada síntesis. Por eso la duración de la referencia afecta a la calidad de la huella y al coste de la clonación, pero no a la latencia de la síntesis. La documentación del modelo Qwen3-TTS no fija una duración mínima para el modo x-vector, así que el mínimo recomendado se midió con datos propios.
+
+**Método.** La fuente es una grabación continua de la voz del autor, la misma de la que procede la voz `default`, mono, a 48 kHz y clonada con `--denoise`, como la voz de fábrica. Se midieron dos series de fragmentos, la A desde el inicio del habla y la B 15 s más tarde. Cada serie tiene 39 duraciones: de 0,1 a 1 s en pasos de 0,1 s y de 1 a 30 s en pasos de 1 s. Cada fragmento se clonó y su x-vector se comparó, por similitud coseno, con el de la referencia de 30 s de su serie. Tres puntos repetidos (0,5, 3 y 30 s) dieron archivos `.qvoice` idénticos byte a byte, así que la clonación es determinista y cada punto es una medida única.
+
+**Criterio, fijado antes de medir.** El mínimo recomendado es la duración más corta a partir de la cual las dos series quedan, en todos los puntos siguientes, con una similitud de al menos 0,995 frente a la referencia de 30 s.
+
+![Similitud coseno del x-vector frente a la referencia de 30 s, según la duración de la referencia, en las dos series](img/clonacion-duracion-referencia.png)
+
+| Duración | Serie A | Serie B |
+| --- | --- | --- |
+| 0,1 s | 0,8927 | 0,9135 |
+| 0,5 s | 0,9471 | 0,9664 |
+| 1 s | 0,9770 | 0,9868 |
+| 2 s | 0,9848 | 0,9909 |
+| 3 s | 0,9930 | 0,9949 |
+| 4 s | 0,9941 | 0,9965 |
+| 5 s | 0,9955 | 0,9974 |
+| 10 s | 0,9986 | 0,9990 |
+| 15 s | 0,9993 | 0,9996 |
+| 20 s | 0,9997 | 0,9997 |
+| 30 s | 1,0000 | 1,0000 |
+
+**Resultado.** La huella cambia deprisa por debajo de 1 s y se aplana a partir de unos 3 s. La serie B cumple el criterio desde 4 s y la serie A desde 5 s, así que **la duración mínima recomendada de la referencia es de 5 s de habla continua**. Por encima de 10 s la huella es prácticamente la de 30 s (similitud de al menos 0,9986), de modo que una referencia más larga apenas la mejora. El motor clona incluso con 0,1 s, pero la huella resultante se aleja de la de una referencia larga. El resultado coincide con la indicación de Alibaba Cloud para su servicio de clonación de Qwen: al menos 5 s de lectura continua y clara, con 10-20 s como duración recomendada.
+
+**Máximo.** `MAX_CLONE_REFERENCE_SECS` se mantiene en 30 s. Pasados los 10 s la huella ya no mejora de forma apreciable, y una referencia más larga solo encarece la clonación y aumenta el riesgo de incluir ruido, pausas o cambios de micrófono en el promedio.
+
+**Alcance de la medición.** Una sola voz, la del autor, y una grabación limpia. Con referencias más ruidosas, o de otros locutores, la curva puede desplazarse. La similitud coseno mide la estabilidad de la huella, no la calidad percibida de la voz sintetizada.
+
 ---
 
 ## 7. Arquitectura y diseño técnico
@@ -474,3 +504,5 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 - `AI-Voice-InterConnector/docs/CLI/commands/SPEECH.md` — Implementación de `--mic` en `transcribe` y `dub`.
 - `AI-Voice-InterConnector/crates/avi-audio/src/lib.rs` — Servicio de captura `AudioService`.
 - `EvolutiveX-Agents/docs/specs/VOICE_CLONING.md` — Especificación contraparte desde la perspectiva del plugin.
+- [Qwen3-TTS (QwenLM)](https://github.com/QwenLM/Qwen3-TTS) — Modo `x_vector_only_mode` y clonación «de 3 segundos».
+- [Alibaba Cloud Model Studio: voice cloning](https://www.alibabacloud.com/help/en/model-studio/qwen-tts-voice-cloning) — Requisitos del audio de referencia: 10-20 s recomendados, máximo 60 s y al menos 5 s de lectura continua.
