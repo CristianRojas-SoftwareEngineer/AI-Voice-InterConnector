@@ -153,7 +153,12 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **`--json` solo cambia stdout:** la cabecera, las etapas, los avisos y el cierre salen por stderr igual con y sin `--json`, y también el `Error:` y la `Solución:` de un error. Con stdout redirigido, `transcribe` y `synthesize` escriben su resultado etiquetado (`Transcripción: …`, `Audio: …`).
 - **Envelope JSON común:** todo envelope añade `context`, `total_ms`, `stages` (identificador, fase, inicio y fin de cada etapa, y si falló, se interrumpió, se omitió o fue transitoria) y `warnings`, y sale exactamente uno por proceso. El envelope de error conserva `error` y `reason` y suma lo mismo, de modo que una etapa fallida queda registrada.
 - **Etapa `Síntesis` con su duración real:** se cierra cuando la síntesis termina de verdad, no con el primer audio. `Reproducción` se abre en paralelo en cuanto suena la primera muestra, anota los cortes en vivo y se cierra al terminar el audio.
-- **`/synthesize` del daemon emite el evento `translation`:** justo después de traducir y antes de sintetizar, solo si los idiomas difieren, con las mismas claves que en `/dub`. El resto del protocolo no cambia.
+- **`/synthesize` del daemon emite el evento `translation`:** justo después de traducir y antes de sintetizar, solo si los idiomas difieren, con las mismas claves que en `/dub`.
+- **Salida por fases de `voice`, `translate` y `daemon`:** `voice clone` recorre `Entrada → Voz` (`Lectura` o `Grabación`, `Limpieza` si hay `--denoise`, `Clonación` y `Guardado`), `voice remove` y `translate` abren con su cabecera y contexto, y `daemon start`, `stop` y `restart` pintan `Arranque`, `Calentamiento` y `Parada del daemon` con el mismo stderr con y sin `--json`. `translate` sin traducción necesaria (mismo idioma) no pinta cabecera ni etapas.
+- **Eventos `denoise` y `save` en `/voices/clone`:** el daemon anuncia la limpieza de la referencia y el guardado de la voz como etapas propias, igual que `/synthesize` y `/dub` anuncian las suyas. `/dub` emite `denoise_queue` con latidos mientras espera su turno de limpieza.
+- **`/transcribe` es un stream NDJSON:** emite eventos de progreso y un evento final con el resultado, en lugar de una única respuesta JSON.
+- **Aviso de referencia corta en `voice clone`:** si la referencia dura menos del mínimo recomendado, el aviso sale bajo `Lectura` (o tras truncar la grabación) y se registra en `warnings` del envelope.
+- **`daemon restart` comprueba el modelo antes de parar:** si falta el modelo de síntesis falla con `model_missing` sin tocar el daemon en marcha ni su pidfile.
 - **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
 - **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
 
@@ -163,6 +168,11 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **Dos medidas del primer audio:** la etapa de síntesis medía un fragmento más que el `first_audio_ms` del JSON. Ahora es una sola medida, desde que abre `Síntesis` hasta la primera muestra en el dispositivo, igual en la terminal y en el JSON.
 - **`Guardando…` pegado al JSON:** `speech synthesize --json` con terminal dejaba `Guardando… 0,0 s` en la misma línea que el envelope. Ahora `Guardado` se cierra antes de emitirlo.
 - **Ctrl+C que mataba el daemon del usuario:** interrumpir un comando cliente terminaba el daemon registrado, aunque lo hubiera arrancado otro, y la salida quedaba entre el código 130 y el 5. Ahora solo se detiene el daemon que lanzó el propio proceso, y la salida es siempre 130.
+- **`daemon start` con stderr distinto según `--json`:** `--json` cambiaba lo que `daemon start` mostraba por stderr. Ahora es el mismo en ambos modos.
+- **`daemon stop` sin `✗` al fallar:** una parada que no concluía no marcaba la etapa como fallida. Ahora deja `✗ Parada del daemon`, el separador y el `Error:` en ambos modos.
+- **Error de una parada fallida con `pid Some(N)`:** el mensaje mostraba el formato de depuración de la opción en lugar del número.
+- **`daemon restart` dejaba sin daemon:** con el modelo ausente paraba el daemon y luego no podía arrancarlo. Ahora comprueba el modelo primero.
+- **Avisos de las consultas fuera del JSON:** los avisos de las consultas no llegaban a `warnings` del envelope.
 
 ### Notas de release
 
@@ -176,6 +186,9 @@ Cambios incompatibles de los envelopes y de la salida de los comandos `speech`.
 - **`--json` con `2>&1` no está soportado:** el stderr de texto y el envelope se mezclarían en el mismo flujo.
 - **PowerShell 5.1 trata las líneas de stderr como errores** cuando se redirigen o se capturan; use `--json` y lea solo stdout.
 - **`reason` nuevo `interrupted`** (exit 130), emitido en el envelope de error cuando Ctrl+C interrumpe un comando.
+- **`DAEMON_SCHEMA_VERSION` pasa a `"8"`:** `/transcribe` es un stream NDJSON, no una respuesta JSON única. Tras actualizar hay que ejecutar `daemon restart`: la CLI rechaza un daemon de otra versión con `reason` `daemon_version_mismatch` (exit 5).
+- **`status` nuevos:** `voice clone` emite `cloned` y `cancelled`, `voice remove` emite `removed` y `cancelled`, `translate` emite `translated`, `daemon start` emite `started` y `already_running`, y `daemon restart` emite `restarted`. Un consumidor con vocabulario cerrado debe adoptarlos.
+- **Etiqueta `Traducción:` en el stdout de `translate` sin `--json`:** la salida es `Traducción: <texto>`, no el valor desnudo; la vía de máquina es `--json`.
 
 ## [0.47.0] — 2026-11-26
 

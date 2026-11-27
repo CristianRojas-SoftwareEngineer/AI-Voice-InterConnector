@@ -654,6 +654,7 @@ function Invoke-VoiceClone {
     $args += '--json'
     $commandName='clone-{0}' -f $Name
     $result = Invoke-Cli -Arguments $args -Name $commandName -Json -ExpectedExit $ExpectedExit
+    if ($result.ExitCode -eq 0) { Assert-True ($result.Payload.status -eq 'cloned') ('El clonado no tuvo status cloned: {0}' -f $result.Payload.status) }
     if ($result.ExitCode -eq 0 -and !$Mic) {
         $qvoicePath=[string]$result.Payload.speech
         if(!(Test-Path -LiteralPath $qvoicePath -PathType Leaf)){throw ('El payload speech no señala el qvoice escrito: {0}' -f $qvoicePath)}
@@ -950,22 +951,22 @@ function Run-E2E {
 
     Invoke-Step '08-synthesis' {
         $auto=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_auto_default','--voice','default') 'synth-auto' -Json
-        Assert-PayloadSchema $auto.Payload;Assert-True ($auto.Payload.status -eq 'success') 'Auto synthesis no tuvo status success.'
+        Assert-PayloadSchema $auto.Payload;Assert-True ($auto.Payload.status -eq 'synthesized') 'Auto synthesis no tuvo status synthesized.'
         $script:WavShortDefault=[IO.Path]::GetFullPath([string]$auto.Payload.audio_path);Assert-Wav $script:WavShortDefault;$script:WavRetained=$script:WavShortDefault
         $forcedDaemon=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_daemon_default','--voice','default','--daemon') 'synth-force-daemon' -Json
-        Assert-True ($forcedDaemon.Payload.status -eq 'success') 'ForceDaemon synthesis falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$forcedDaemon.Payload.audio_path))
+        Assert-True ($forcedDaemon.Payload.status -eq 'synthesized') 'ForceDaemon synthesis falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$forcedDaemon.Payload.audio_path))
         $autoClone=Invoke-Cli @('speech','synthesize','--text','Hola clon','--label','e2e_auto_clone','--voice','mi_voz') 'synth-auto-clone' -Json
-        Assert-True ($autoClone.Payload.status -eq 'success') 'Synthesis Auto de voz clonada falló.'
+        Assert-True ($autoClone.Payload.status -eq 'synthesized') 'Synthesis Auto de voz clonada falló.'
         Assert-Wav ([IO.Path]::GetFullPath([string]$autoClone.Payload.audio_path));$wavAutoClone=[IO.Path]::GetFullPath([string]$autoClone.Payload.audio_path)
         $cloneDaemonWav=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_daemon_clone','--voice','mi_voz','--daemon') 'synth-clone-daemon-wer' -Json
-        Assert-True ($cloneDaemonWav.Payload.status -eq 'success') 'Síntesis daemon de voz clonada falló.'
+        Assert-True ($cloneDaemonWav.Payload.status -eq 'synthesized') 'Síntesis daemon de voz clonada falló.'
         $script:WavShortClone=[IO.Path]::GetFullPath([string]$cloneDaemonWav.Payload.audio_path)
         Assert-Wav $script:WavShortClone
         if($script:OutputAvailable){$sayClone=Invoke-Cli @('speech','say','--text','Hola clon','--voice','mi_voz','--no-daemon') 'say-clone' -Json;Assert-True ($sayClone.Payload.status -eq 'reproduced') 'say cloned no reporta reproduced.';$sayFactory=Invoke-Cli @('speech','say','--text','Hola factory','--voice','default','--daemon') 'say-factory' -Json;Assert-True ($sayFactory.Payload.status -eq 'reproduced') 'say factory no reporta reproduced.'}else{Set-SubcaseResult '08-synthesis-say' 'SKIP' -Reason 'devices --json informó default_output nulo; say no se invocó.';Set-Step '08-synthesis-say' 'SKIP' 'No hay salida predeterminada (default_output nulo).'}
         Stop-ManagedDaemon
-        $direct=Invoke-Cli @('speech','synthesize','--text','Hello world','--label','e2e_direct_en','--voice','default','--source-language','en','--target-language','en','--temperature','0.7','--no-daemon') 'synth-force-direct' -Json;Assert-True ($direct.Payload.status -eq 'success') 'ForceDirect synthesis falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$direct.Payload.audio_path))
-        $directClone=Invoke-Cli @('speech','synthesize','--text','Hola clon','--label','e2e_direct_clone','--voice','mi_voz','--no-daemon') 'synth-force-direct-clone' -Json;Assert-True ($directClone.Payload.status -eq 'success') 'ForceDirect synthesis de voz clonada falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$directClone.Payload.audio_path))
-        $cross=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_direct_cross','--voice','default','--source-language','es','--target-language','en','--temperature','0.7','--no-daemon') 'synth-direct-cross' -Json;Assert-True ($cross.Payload.status -eq 'success') 'Síntesis directa cross-language falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$cross.Payload.audio_path))
+        $direct=Invoke-Cli @('speech','synthesize','--text','Hello world','--label','e2e_direct_en','--voice','default','--source-language','en','--target-language','en','--temperature','0.7','--no-daemon') 'synth-force-direct' -Json;Assert-True ($direct.Payload.status -eq 'synthesized') 'ForceDirect synthesis falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$direct.Payload.audio_path))
+        $directClone=Invoke-Cli @('speech','synthesize','--text','Hola clon','--label','e2e_direct_clone','--voice','mi_voz','--no-daemon') 'synth-force-direct-clone' -Json;Assert-True ($directClone.Payload.status -eq 'synthesized') 'ForceDirect synthesis de voz clonada falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$directClone.Payload.audio_path))
+        $cross=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_direct_cross','--voice','default','--source-language','es','--target-language','en','--temperature','0.7','--no-daemon') 'synth-direct-cross' -Json;Assert-True ($cross.Payload.status -eq 'synthesized') 'Síntesis directa cross-language falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$cross.Payload.audio_path))
         Assert-Wav $script:WavShortClone
         $nativeStt=Test-NativeSttCapability -AudioPath (Join-Path $script:Root 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav')
         $parakeetAvailable=Test-PinnedModel 'parakeet-tdt-v3'
@@ -1005,7 +1006,7 @@ function Run-E2E {
 
     Invoke-Step '11-translate' {
         Start-ManagedDaemon
-        $tr=Invoke-Cli @('translate','--text','Hola','--source-language','es','--target-language','en','--daemon') 'translate-es-en' -Json;Assert-True ($tr.Payload.translated -and $tr.Payload.translated -ne 'Hola') 'Translate es-en falló.'
+        $tr=Invoke-Cli @('translate','--text','Hola','--source-language','es','--target-language','en','--daemon') 'translate-es-en' -Json;Assert-True ($tr.Payload.status -eq 'translated' -and $tr.Payload.translated -and $tr.Payload.translated -ne 'Hola') 'Translate es-en falló.'
         Stop-ManagedDaemon
         $tr=Invoke-Cli @('translate','--text','Hello','--source-language','en','--target-language','es','--no-daemon') 'translate-en-es' -Json;Assert-True ($tr.Payload.translated -and $tr.Payload.translated -ne 'Hello') 'Translate en-es falló.'
         $pass=Invoke-Cli @('translate','--text','Hola','--source-language','es','--target-language','es','--no-daemon') 'translate-passthrough' -Json;Assert-True ($pass.Payload.translated -eq 'Hola') 'Passthrough modificó texto.'

@@ -11571,7 +11571,12 @@ mod parity {
 
     /// Nombre de columna y su identificador de catálogo, para las etapas que
     /// recorren los comandos de este módulo.
-    const STAGE_NAMES: [(&str, &str); 7] = [
+    const STAGE_NAMES: [(&str, &str); 12] = [
+        ("Grabación", "capturing"),
+        ("Clonación", "cloning"),
+        ("Arranque", "starting"),
+        ("Calentamiento", "warming"),
+        ("Parada del daemon", "stopping"),
         ("Lectura", "reading"),
         ("Transcripción", "transcribing"),
         ("Traducción", "translating"),
@@ -11693,6 +11698,74 @@ mod parity {
         assert_eq!(code, 0, "{stderr}");
         let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
         assert_eq!(painted_stages(&stderr).len(), 2, "{stderr}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `translate` por daemon es de etapa única: stderr no pinta línea de etapa y el JSON
+    /// lleva exactamente una.
+    #[test]
+    fn translate_stderr_stages_match_the_json_stages() {
+        let (sandbox, envs) = contract_sandbox("parity-translate");
+        let fake = FakeDaemon::start(
+            200,
+            serde_json::json!({
+                "translated": "Hello",
+                "source_language": "es",
+                "target_language": "en",
+            }),
+        );
+        fake.publish_in(&sandbox.path().join("data"));
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, stdout, stderr) = run_capture(
+            &["--json", "translate", "--daemon", "--text", "Hola"],
+            &envs,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(recorded_stages(&envelope).len(), 1, "{envelope}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `voice remove --yes` es de etapa única: el JSON lleva exactamente `removing`.
+    #[test]
+    fn voice_remove_yes_stderr_stages_match_the_json_stages() {
+        let inst = IsolatedInstance::new("parity_voice_remove");
+        std::fs::create_dir_all(inst.dir.join("voices").join("locutor")).expect("crear la voz");
+        let (code, stdout, stderr) = run_capture(
+            &["--json", "voice", "remove", "--name", "locutor", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(recorded_stages(&envelope).len(), 1, "{envelope}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `voice clone --daemon`: etapas, fases y desenlaces idénticos.
+    #[test]
+    fn voice_clone_stderr_stages_match_the_json_stages() {
+        let (code, stdout, stderr) =
+            clone_against_fake_daemon("parity-clone", true, 8, clone_ok_events(), &[]);
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(painted_stages(&stderr).len(), 3, "{stderr}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `daemon stop` fallido: la única etapa, `Parada del daemon`, queda fallida en el JSON
+    /// y no deja línea numerada en stderr.
+    #[test]
+    fn daemon_stop_stderr_stages_match_the_json_stages() {
+        let (sandbox, envs) = sandbox_unique_state("parity-daemon-stop");
+        seed_unstoppable_daemon(sandbox.path());
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, stdout, stderr) = run_capture(&["--json", "daemon", "stop"], &envs);
+        assert_eq!(code, 5, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        let recorded = recorded_stages(&envelope);
+        assert_eq!(recorded.len(), 1, "{envelope}");
+        assert_eq!(recorded[0].stage, "stopping", "{envelope}");
+        assert_eq!(recorded[0].symbol, '✗', "{envelope}");
         assert_stage_parity(&stderr, &envelope);
     }
 
