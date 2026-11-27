@@ -809,9 +809,10 @@ impl StreamPlayer {
 
     /// Marca el fin de la entrega, espera a que se reproduzca lo que queda y
     /// devuelve las estadísticas. Falla si el flujo de audio muere antes.
-    /// Llama a `on_tick` en cada vuelta de la espera, para que quien llama
-    /// pueda repintar su indicador mientras suena el audio.
-    pub fn finish(self, on_tick: &mut dyn FnMut()) -> Result<PlaybackStats> {
+    /// Llama a `on_tick` en cada vuelta de la espera con las estadísticas en
+    /// vivo, para que quien llama pueda repintar su indicador y reflejar la
+    /// primera muestra y los cortes mientras suena el audio.
+    pub fn finish(self, on_tick: &mut dyn FnMut(PlaybackStats)) -> Result<PlaybackStats> {
         let tail = acquire_lock(&self.resampler, "remuestreador").finish();
         {
             let mut queue = acquire_lock(&self.queue, "cola de reproducción");
@@ -820,10 +821,14 @@ impl StreamPlayer {
         }
         loop {
             ensure_stream_alive(&self.failed, "la reproducción")?;
-            if acquire_lock(&self.queue, "cola de reproducción").is_done() {
-                break;
-            }
-            on_tick();
+            let live = {
+                let queue = acquire_lock(&self.queue, "cola de reproducción");
+                if queue.is_done() {
+                    break;
+                }
+                queue.stats()
+            };
+            on_tick(live);
             std::thread::sleep(POLL_INTERVAL);
         }
         std::thread::sleep(STREAM_TAIL_DRAIN);

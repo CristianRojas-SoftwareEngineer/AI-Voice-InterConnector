@@ -226,10 +226,11 @@ struct DirectSynthesis<'a> {
 
 /// Lo que queda de una entrega en streaming ya terminada.
 struct DeliveryStats {
-    /// Milisegundos desde que se abre la etapa de síntesis, incluidas la espera de
-    /// turno, el calentamiento del motor y la carga de la voz, hasta que la
-    /// primera muestra llegó al dispositivo; `None` si no hubo reproducción o no
-    /// llegó audio.
+    /// Milisegundos desde que se abre la etapa de síntesis (la del registro de
+    /// ejecución), incluidas la espera de turno, el calentamiento del motor y la
+    /// carga de la voz, hasta que la primera muestra llegó al dispositivo; `None`
+    /// si no hubo reproducción o no llegó audio. Es la misma medida que lleva la
+    /// línea de `Síntesis`.
     first_audio_ms: Option<u64>,
     /// Veces que la cola de reproducción se vació con la entrega en curso.
     stalls: u32,
@@ -237,18 +238,148 @@ struct DeliveryStats {
     pcm: Vec<i16>,
 }
 
+/// Dato de la línea de `Reproducción` mientras la síntesis sigue en marcha.
+const PLAYING_IN_PARALLEL_NOTE: &str = "en paralelo con la síntesis";
+/// Texto vivo mientras suena el audio y el motor sigue sintetizando.
+const SYNTHESIZING_AND_PLAYING_TEXT: &str = "Sintetizando y reproduciendo…";
+/// Texto vivo cuando la síntesis ya terminó y queda audio por sonar.
+const PLAYING_REST_TEXT: &str = "Reproduciendo el resto…";
+
+/// Duración desde la apertura de la última etapa de síntesis del registro hasta
+/// `first_audio_at`, truncada a milisegundos. Es la única medida del primer
+/// audio: la línea de `Síntesis`, el cierre y el JSON salen de ella. `None` si el
+/// registro no tiene etapa de síntesis.
+fn first_audio_offset(
+    snapshot: &avi_term::report::Snapshot,
+    first_audio_at: std::time::Instant,
+) -> Option<std::time::Duration> {
+    let began = snapshot
+        .stages
+        .iter()
+        .rev()
+        .find(|record| record.label == stage::SYNTHESIZING.label)?
+        .start;
+    let elapsed = first_audio_at.saturating_duration_since(began);
+    Some(std::time::Duration::from_millis(elapsed.as_millis() as u64))
+}
+
+/// Presentación de las dos etapas solapadas: `Síntesis` y `Reproducción`. La
+/// reproducción se abre con la primera muestra que llegó al dispositivo (el
+/// instante exacto, no el de la CLI al enterarse) y la síntesis se cierra
+/// cuando termina de verdad, aunque siga sonando audio.
+#[derive(Default)]
+struct SynthesisStages {
+    /// `Reproducción` ya está abierta en el registro.
+    playing_opened: bool,
+    /// `Síntesis` ya se cerró.
+    synthesis_ended: bool,
+    /// `Reproducción` se abrió con la síntesis todavía viva.
+    in_parallel: bool,
+    /// Cortes ya reflejados en pantalla.
+    stalls: u32,
+}
+
+impl SynthesisStages {
+    /// Refleja las estadísticas de reproducción: abre `Reproducción` en cuanto
+    /// hay primera muestra y actualiza el dato y el texto vivo si cambian los
+    /// cortes.
+    fn observe(&mut self, progress: &PhaseProgress, stats: audio::PlaybackStats) {
+        if !self.playing_opened {
+            let Some(first_audio_at) = stats.first_audio_at else {
+                return;
+            };
+            self.playing_opened = true;
+            self.in_parallel = !self.synthesis_ended;
+            progress.overlap(&stage::PLAYING, first_audio_at);
+            self.refresh(progress, stats.stalls);
+        } else if stats.stalls != self.stalls {
+            self.refresh(progress, stats.stalls);
+        }
+    }
+
+    /// Escribe el dato de `Reproducción` y el texto vivo de la etapa que se ve.
+    fn refresh(&mut self, progress: &PhaseProgress, stalls: u32) {
+        self.stalls = stalls;
+        let cuts = (stalls > 0).then(|| avi_term::fmt::count(u64::from(stalls), "corte", "cortes"));
+        let note: Vec<&str> = self
+            .in_parallel
+            .then_some(PLAYING_IN_PARALLEL_NOTE)
+            .into_iter()
+            .chain(cuts.as_deref())
+            .collect();
+        if !note.is_empty() {
+            progress.note_stage(&stage::PLAYING, &note.join(" · "));
+        }
+        let (target, text) = if self.synthesis_ended {
+            (&stage::PLAYING, PLAYING_REST_TEXT)
+        } else {
+            (&stage::SYNTHESIZING, SYNTHESIZING_AND_PLAYING_TEXT)
+        };
+        let text = match &cuts {
+            Some(cuts) => format!("{text} · {cuts}"),
+            None => text.to_string(),
+        };
+        progress.live_text(target, &text);
+    }
+
+    /// Cierra `Síntesis` en `at`, el instante en que terminó de verdad, con el
+    /// dato `primer audio X` si la primera muestra ya sonó. Si `Reproducción`
+    /// está abierta pasa a ser la etapa visible.
+    fn synthesis_finished(
+        &mut self,
+        progress: &PhaseProgress,
+        stats: audio::PlaybackStats,
+        at: std::time::Instant,
+    ) {
+        self.observe(progress, stats);
+        if self.synthesis_ended {
+            return;
+        }
+        self.synthesis_ended = true;
+        if let Some(first_audio) = stats
+            .first_audio_at
+            .and_then(|first| first_audio_offset(&avi_term::report::snapshot(), first))
+        {
+            progress.note_stage(
+                &stage::SYNTHESIZING,
+                &format!("primer audio {}", avi_term::fmt::duration(first_audio)),
+            );
+        }
+        progress.end_stage_at(&stage::SYNTHESIZING, at);
+        if self.playing_opened {
+            self.refresh(progress, stats.stalls);
+        }
+    }
+
+    /// Cierra `Reproducción` en `at`, cuando `finish` devuelve, con los cortes
+    /// finales.
+    fn playback_finished(
+        &mut self,
+        progress: &PhaseProgress,
+        stats: audio::PlaybackStats,
+        at: std::time::Instant,
+    ) {
+        self.observe(progress, stats);
+        if self.playing_opened {
+            progress.end_stage_at(&stage::PLAYING, at);
+        }
+    }
+}
+
 /// Receptor de los fragmentos de audio de una síntesis en streaming. Lo usan igual
 /// la ruta directa, que recibe los fragmentos del motor, y la del daemon, que los
 /// recibe en eventos `audio`.
 trait AudioReceiver {
-    /// Marca el inicio de la fase de síntesis: desde aquí cuenta `first_audio_ms`,
-    /// incluidas la espera de turno, el calentamiento del motor y la carga de la
-    /// voz, hasta la primera muestra que suena.
-    fn begin_synthesis(&mut self);
     /// Entrega un fragmento. Un fallo del dispositivo es `playback_failed`.
     fn push(&mut self, pcm: &[i16]) -> Result<(), CliError>;
     /// Si ya se entregó alguna muestra al dispositivo.
     fn started(&self) -> bool;
+    /// Refleja en el indicador el estado de la reproducción: abre `Reproducción`
+    /// en la primera muestra y muestra los cortes. Sin reproductor no hace nada.
+    fn observe(&mut self, progress: &PhaseProgress);
+    /// Avisa de que la síntesis terminó de verdad: cierra `Síntesis` en este
+    /// instante, aunque el audio siga sonando.
+    fn synthesis_finished(&mut self, progress: &PhaseProgress);
 }
 
 /// Reparte los fragmentos de una síntesis entre un reproductor opcional y un
@@ -256,17 +387,20 @@ trait AudioReceiver {
 struct StreamDelivery {
     player: Option<audio::StreamPlayer>,
     accumulated: Option<Vec<i16>>,
-    /// Instante en que se abrió la etapa de síntesis: origen de `first_audio_ms`.
-    synthesis_began: std::time::Instant,
+    /// Presentación de las etapas solapadas de síntesis y reproducción.
+    stages: SynthesisStages,
     /// Principio del mensaje de `playback_failed`, antes de la causa.
     playback_failure: String,
 }
 
-impl AudioReceiver for StreamDelivery {
-    fn begin_synthesis(&mut self) {
-        self.synthesis_began = std::time::Instant::now();
+impl StreamDelivery {
+    /// Estadísticas de reproducción en vivo; `None` sin reproductor.
+    fn live_stats(&self) -> Option<audio::PlaybackStats> {
+        self.player.as_ref().map(audio::StreamPlayer::live_stats)
     }
+}
 
+impl AudioReceiver for StreamDelivery {
     fn push(&mut self, pcm: &[i16]) -> Result<(), CliError> {
         if let Some(player) = &self.player {
             player
@@ -282,30 +416,46 @@ impl AudioReceiver for StreamDelivery {
     fn started(&self) -> bool {
         self.player.as_ref().is_some_and(|p| p.started())
     }
+
+    fn observe(&mut self, progress: &PhaseProgress) {
+        if let Some(stats) = self.live_stats() {
+            self.stages.observe(progress, stats);
+        }
+    }
+
+    fn synthesis_finished(&mut self, progress: &PhaseProgress) {
+        let stats = self.live_stats().unwrap_or(audio::PlaybackStats {
+            first_audio_at: None,
+            stalls: 0,
+        });
+        self.stages
+            .synthesis_finished(progress, stats, std::time::Instant::now());
+    }
 }
 
 impl StreamDelivery {
-    /// Fija el origen de `first_audio_ms` en el instante en que el llamador abrió
-    /// la etapa de síntesis, antes de resolver la voz y de abrir el dispositivo.
-    fn began_at(mut self, synthesis_began: std::time::Instant) -> Self {
-        self.synthesis_began = synthesis_began;
-        self
-    }
-
     /// Termina la entrega: espera a que suene lo que queda en cola, repintando
-    /// el indicador mientras suena, y devuelve los datos de la reproducción y el
-    /// audio acumulado.
-    fn finish(self, progress: &PhaseProgress) -> Result<DeliveryStats, CliError> {
+    /// el indicador y reflejando la reproducción mientras suena, cierra
+    /// `Reproducción` cuando termina y devuelve los datos de la reproducción y
+    /// el audio acumulado. `first_audio_ms` sale del registro: es la medida de
+    /// la línea de `Síntesis`.
+    fn finish(mut self, progress: &PhaseProgress) -> Result<DeliveryStats, CliError> {
         let (first_audio_ms, stalls) = match self.player {
             Some(player) => {
+                let stages = &mut self.stages;
                 let playback = player
-                    .finish(&mut || progress.tick())
+                    .finish(&mut |live| {
+                        progress.tick();
+                        stages.observe(progress, live);
+                    })
                     .map_err(|e| playback_error(e, &self.playback_failure))?;
+                stages.playback_finished(progress, playback, std::time::Instant::now());
+                let snapshot = avi_term::report::snapshot();
                 (
-                    playback.first_audio_at.map(|at| {
-                        at.saturating_duration_since(self.synthesis_began)
-                            .as_millis() as u64
-                    }),
+                    playback
+                        .first_audio_at
+                        .and_then(|at| first_audio_offset(&snapshot, at))
+                        .map(|offset| offset.as_millis() as u64),
                     playback.stalls,
                 )
             }
@@ -332,8 +482,6 @@ impl StreamDelivery {
 struct RejectAudio;
 
 impl AudioReceiver for RejectAudio {
-    fn begin_synthesis(&mut self) {}
-
     fn push(&mut self, _pcm: &[i16]) -> Result<(), CliError> {
         Err(CliError::new(
             ExitCode::Error,
@@ -345,6 +493,10 @@ impl AudioReceiver for RejectAudio {
     fn started(&self) -> bool {
         false
     }
+
+    fn observe(&mut self, _progress: &PhaseProgress) {}
+
+    fn synthesis_finished(&mut self, _progress: &PhaseProgress) {}
 }
 
 /// Error de reproducción: sin backend, sin salida o fallo del flujo de audio.
@@ -377,7 +529,7 @@ fn open_delivery(
     Ok(StreamDelivery {
         player,
         accumulated: accumulate.then(Vec::new),
-        synthesis_began: std::time::Instant::now(),
+        stages: SynthesisStages::default(),
         playback_failure,
     })
 }
@@ -392,13 +544,15 @@ fn write_take_wav(path: &std::path::Path, pcm: &[i16]) -> Result<(), CliError> {
 
 /// Síntesis directa en streaming: el motor local entrega el audio fragmento a
 /// fragmento a `delivery`, que lo reproduce, lo acumula o ambas cosas. La etapa
-/// visible pasa a `Reproduciendo…` en cuanto suena la primera muestra. Si la
-/// síntesis falla a mitad, se corta la reproducción y el error es el de la
-/// síntesis; un fallo del dispositivo cancela la síntesis y es `playback_failed`.
+/// `Reproducción` se abre con la primera muestra, en paralelo con `Síntesis`, y
+/// `Síntesis` se cierra cuando vuelve la síntesis, antes de esperar a que
+/// termine de sonar. Si la síntesis falla a mitad, se corta la reproducción y el
+/// error es el de la síntesis; un fallo del dispositivo cancela la síntesis y es
+/// `playback_failed`.
 ///
 /// La etapa `SYNTHESIZING` ya está abierta: mientras el motor arranca su
-/// residente su texto activo es «Cargando la voz…». El reloj de `first_audio_ms`
-/// es el de `delivery`, que el llamador fijó al abrir esa etapa.
+/// residente su texto activo es «Cargando la voz…». El primer audio se mide
+/// desde la apertura de esa etapa en el registro.
 fn synthesize_streaming_directly(
     request: &DirectSynthesis<'_>,
     progress: &PhaseProgress,
@@ -413,7 +567,6 @@ fn synthesize_streaming_directly(
     );
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut playback_failure: Option<CliError> = None;
-    let mut announced_playing = false;
     let result = progress.while_running(|| {
         request.engine.synthesize_streaming(
             request.text,
@@ -425,19 +578,21 @@ fn synthesize_streaming_directly(
                     playback_failure = Some(e);
                     return Err(anyhow::anyhow!("falló la reproducción del audio"));
                 }
-                if !announced_playing && delivery.started() {
-                    announced_playing = true;
-                    // La síntesis termina con el primer audio, que ya suena.
-                    progress.done_as("Primer audio");
-                    progress.phase(&stage::PLAYING);
-                }
+                // La reproducción se abre con la primera muestra, sin cerrar la
+                // síntesis, que sigue hasta que vuelve el motor.
+                delivery.observe(progress);
                 Ok(())
             },
             &mut |step| show_synthesis_step(progress, step),
         )
     });
     match result {
-        Ok(()) => delivery.finish(progress),
+        Ok(()) => {
+            // La síntesis terminó de verdad: se cierra ahora, antes de esperar
+            // a que suene lo que queda en cola.
+            delivery.synthesis_finished(progress);
+            delivery.finish(progress)
+        }
         Err(e) => {
             delivery.abort();
             Err(playback_failure.unwrap_or_else(|| synthesis_cli_error(e)))
@@ -1531,6 +1686,20 @@ fn finish_progress<T, E>(
         }
         Err(_) => progress.fail(),
     }
+}
+
+/// Extras del cierre de un comando con síntesis en streaming: `primer audio X`,
+/// si hubo reproducción, y los cortes, solo si hubo alguno. El primer audio es
+/// el mismo valor que lleva la línea de `Síntesis` y el JSON.
+fn streaming_closing_extras(first_audio_ms: Option<u64>, stalls: u32) -> Vec<String> {
+    let first_audio = first_audio_ms.map(|ms| {
+        format!(
+            "primer audio {}",
+            avi_term::fmt::duration(std::time::Duration::from_millis(ms))
+        )
+    });
+    let cuts = (stalls > 0).then(|| avi_term::fmt::count(u64::from(stalls), "corte", "cortes"));
+    first_audio.into_iter().chain(cuts).collect()
 }
 
 /// Ruta efectiva de un comando para su línea de contexto.
@@ -3020,7 +3189,6 @@ struct LocalResynthesizer<'a> {
 impl PlayResynthesizer for LocalResynthesizer<'_> {
     async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
         self.progress.phase(&stage::SYNTHESIZING);
-        let synthesis_began = std::time::Instant::now();
         self.progress.tick();
         let result = open_delivery(
             true,
@@ -3031,7 +3199,6 @@ impl PlayResynthesizer for LocalResynthesizer<'_> {
             ),
         )
         .and_then(|delivery| {
-            let delivery = delivery.began_at(synthesis_began);
             synthesize_streaming_directly(
                 &DirectSynthesis {
                     engine: self.engine,
@@ -3688,7 +3855,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     text.clone()
                 };
                 progress.phase(&stage::SYNTHESIZING);
-                let synthesis_began = std::time::Instant::now();
                 progress.tick();
                 // La identidad de la voz se resuelve antes de sintetizar: la
                 // locución solo se guarda si la voz la conserva al guardarla.
@@ -3700,8 +3866,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         true,
                         true,
                         format!("No se pudo reproducir el audio sintetizado '{}'", label),
-                    )?
-                    .began_at(synthesis_began);
+                    )?;
                     let take = synthesize_streaming_directly(
                         &DirectSynthesis {
                             engine: &engine,
@@ -3859,14 +4024,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     text.clone()
                 };
                 progress.phase(&stage::SYNTHESIZING);
-                let synthesis_began = std::time::Instant::now();
                 progress.tick();
                 let reference = resolve_voice_reference(&voice_store, &voice)?;
                 // El dispositivo se abre antes de pedir la síntesis: sin salida de
                 // audio el comando termina sin sintetizar.
                 let delivery =
-                    open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?
-                        .began_at(synthesis_began);
+                    open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?;
                 synthesize_streaming_directly(
                     &DirectSynthesis {
                         engine: &engine,
@@ -3882,8 +4045,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 )
             }
             .await;
-            finish_progress(progress, &result, "Reproducción completada", |_| {
-                Vec::new()
+            finish_progress(progress, &result, "Reproducción completada", |stats| {
+                streaming_closing_extras(stats.first_audio_ms, stats.stalls)
             });
             let stats = result?;
             if json_mode {
@@ -4129,12 +4292,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     progress.reclaim();
                     let engine = engine_result?;
                     progress.phase(&stage::SYNTHESIZING);
-                    let synthesis_began = std::time::Instant::now();
                     progress.tick();
                     let reference = resolve_voice_reference(&voice_store, &voice)?;
                     // El dispositivo se abre antes de pedir la síntesis.
-                    let delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?
-                        .began_at(synthesis_began);
+                    let delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?;
                     let stats = synthesize_streaming_directly(
                         &DirectSynthesis {
                             engine: &engine,
@@ -6527,11 +6688,13 @@ impl StreamResult {
 /// Espera el siguiente fragmento del stream hasta `wait` como máximo,
 /// repintando el indicador cada `PROGRESS_REPAINT_INTERVAL` mientras no llega.
 /// Devuelve `None` si agotó `wait` sin fragmento; el plazo total es el mismo
-/// que con una sola espera.
+/// que con una sola espera. En cada repintado llama también a `on_repaint`, para
+/// que quien consume refleje la reproducción sin esperar al siguiente evento.
 async fn next_chunk_repainting<P: ProgressTicker + ?Sized>(
     resp: &mut reqwest::Response,
     wait: std::time::Duration,
     progress: &P,
+    on_repaint: &mut dyn FnMut(),
 ) -> Option<Result<Option<String>, reqwest::Error>> {
     let end = tokio::time::Instant::now() + wait;
     loop {
@@ -6543,6 +6706,7 @@ async fn next_chunk_repainting<P: ProgressTicker + ?Sized>(
             );
         }
         progress.repaint();
+        on_repaint();
     }
 }
 
@@ -6561,11 +6725,6 @@ async fn consume_ndjson_stream(
     audio: &mut dyn AudioReceiver,
 ) -> Result<Value, CliError> {
     let deadline = tokio::time::Instant::now() + STREAM_TOTAL_DEADLINE;
-    let mut synthesis_began = false;
-    let mut playing = false;
-    // Etiqueta de la etapa que el consumo dejó abierta, para no renombrar
-    // otra con `done_as`.
-    let mut current_label = "";
     let command_stage = expected.stage();
     let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
@@ -6584,19 +6743,20 @@ async fn consume_ndjson_stream(
             ));
         };
         let wait = std::cmp::min(STREAM_INACTIVITY_TIMEOUT, remaining);
-        let chunk = next_chunk_repainting(&mut resp, wait, progress)
-            .await
-            .ok_or_else(|| {
-                CliError::new(
-                    ExitCode::DaemonUnreachable,
-                    "daemon_unreachable",
-                    format!(
-                        "El daemon en {} dejó de enviar eventos durante la operación {}.",
-                        client_addr, command_stage
-                    ),
-                )
-            })?
-            .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+        let chunk =
+            next_chunk_repainting(&mut resp, wait, progress, &mut || audio.observe(progress))
+                .await
+                .ok_or_else(|| {
+                    CliError::new(
+                        ExitCode::DaemonUnreachable,
+                        "daemon_unreachable",
+                        format!(
+                            "El daemon en {} dejó de enviar eventos durante la operación {}.",
+                            client_addr, command_stage
+                        ),
+                    )
+                })?
+                .map_err(|e| daemon_connect_error(&client_addr, &e))?;
         // Un fragmento recién llegado (latido o evento) también repinta: el
         // contador no debe esperar al siguiente fragmento para avanzar.
         progress.tick();
@@ -6608,6 +6768,7 @@ async fn consume_ndjson_stream(
                 let line = std::mem::take(&mut rest);
                 if !line.trim().is_empty() {
                     if let Some(v) = process_stream_line(&line)? {
+                        audio.synthesis_finished(progress);
                         return Ok(v);
                     }
                 }
@@ -6638,32 +6799,21 @@ async fn consume_ndjson_stream(
                     format!("NDJSON inválido del daemon: {}", e),
                 )
             })?;
+            // Presentación: el primer evento de la síntesis, sea espera o
+            // trabajo, abre la etapa `Síntesis`, cuyo reloj es el del primer
+            // audio: la espera cuenta. Una vez que suena, los latidos de la
+            // síntesis no cambian la etapa visible: la reproducción corre en
+            // paralelo.
             if let Some((event_stage, active)) = stream_event_phase(&ev) {
-                // El primer evento de la síntesis, sea espera o trabajo, abre el
-                // reloj de «primer audio»: la espera cuenta.
-                if event_stage.label == stage::SYNTHESIZING.label && !synthesis_began {
-                    synthesis_began = true;
-                    audio.begin_synthesis();
-                }
-                // Una vez que suena, los latidos de la síntesis no devuelven la fase
-                // anterior.
-                if !(playing && event_stage.label == stage::SYNTHESIZING.label) {
+                if !(audio.started() && event_stage.label == stage::SYNTHESIZING.label) {
                     progress.phase_with(event_stage, active);
-                    current_label = event_stage.label;
                 }
             }
+            // Protocolo: cada evento por su tipo.
             match ev.get("event").and_then(|v| v.as_str()) {
                 Some("audio") => {
                     audio.push(&decode_audio_event(&ev)?)?;
-                    if !playing && audio.started() {
-                        playing = true;
-                        // La síntesis termina con el primer audio, que ya suena.
-                        if current_label == stage::SYNTHESIZING.label {
-                            progress.done_as("Primer audio");
-                        }
-                        progress.phase(&stage::PLAYING);
-                        current_label = stage::PLAYING.label;
-                    }
+                    audio.observe(progress);
                 }
                 // Los textos del doblaje salen por stdout en cuanto llegan, antes
                 // de que suene el audio. Cada uno cierra la etapa que lo produjo.
@@ -6683,9 +6833,13 @@ async fn consume_ndjson_stream(
                         "Traducción"
                     };
                     progress.result(Some(label), text);
-                    current_label = "";
                 }
-                Some("result") => return Ok(ev),
+                // La síntesis terminó de verdad: `Síntesis` se cierra aquí, aunque
+                // quede audio por sonar.
+                Some("result") => {
+                    audio.synthesis_finished(progress);
+                    return Ok(ev);
+                }
                 Some("error") => return Err(stream_error_event(&ev)),
                 _ => {}
             }
@@ -7167,7 +7321,9 @@ fn finish_dub(
     progress: PhaseProgress,
     result: Result<DubOutcome, CliError>,
 ) -> Result<(), CliError> {
-    finish_progress(progress, &result, "Doblaje completado", |_| Vec::new());
+    finish_progress(progress, &result, "Doblaje completado", |outcome| {
+        streaming_closing_extras(outcome.first_audio_ms, outcome.stalls)
+    });
     let outcome = result?;
     if json_mode {
         emit_raw_json(dub_envelope(&outcome));
@@ -8275,17 +8431,12 @@ mod tests {
     #[derive(Default)]
     struct CollectingAudio {
         chunks: Vec<Vec<i16>>,
-        synthesis_began: bool,
-        /// Orden de las llamadas al receptor: `begin` y `push`.
+        /// Orden de las llamadas al receptor: `push` y `finished` (fin de la
+        /// síntesis).
         calls: Vec<&'static str>,
     }
 
     impl AudioReceiver for CollectingAudio {
-        fn begin_synthesis(&mut self) {
-            self.synthesis_began = true;
-            self.calls.push("begin");
-        }
-
         fn push(&mut self, pcm: &[i16]) -> Result<(), CliError> {
             self.calls.push("push");
             self.chunks.push(pcm.to_vec());
@@ -8294,6 +8445,12 @@ mod tests {
 
         fn started(&self) -> bool {
             !self.chunks.is_empty()
+        }
+
+        fn observe(&mut self, _progress: &PhaseProgress) {}
+
+        fn synthesis_finished(&mut self, _progress: &PhaseProgress) {
+            self.calls.push("finished");
         }
     }
 
@@ -8346,15 +8503,16 @@ mod tests {
         assert_eq!(val["translated"], "hola");
         assert!(val.get("audio_b64").is_none());
         assert_eq!(audio.chunks, vec![vec![1, 2, 3], vec![-4, 5]]);
-        assert!(
-            audio.synthesis_began,
-            "la fase de síntesis se anuncia al receptor"
+        assert_eq!(
+            audio.calls.last(),
+            Some(&"finished"),
+            "el evento result cierra la síntesis para el receptor"
         );
     }
 
-    /// Una espera de turno es texto vivo de la etapa de síntesis: no cierra
-    /// «Voz sintetizada» como hecha, el reloj de «primer audio» parte de la
-    /// espera y `begin_synthesis` llega antes del primer fragmento.
+    /// Una espera de turno es texto vivo de la etapa de síntesis: no la cierra
+    /// como hecha, y la síntesis solo se da por terminada al llegar `result`,
+    /// después de todos los fragmentos.
     #[tokio::test]
     async fn consume_ndjson_stream_queued_wait_does_not_finish_synthesis() {
         let addr = serve_programmed_sequence(
@@ -8380,7 +8538,7 @@ mod tests {
         consume_ndjson_stream(resp, StreamResult::Synthesize, &progress, &mut audio)
             .await
             .expect("la secuencia termina con result");
-        assert_eq!(audio.calls, vec!["begin", "push", "push"]);
+        assert_eq!(audio.calls, vec!["push", "push", "finished"]);
         let _elapsed = progress.close();
     }
 
@@ -8461,9 +8619,9 @@ mod tests {
     /// reproducción: ni primer sonido ni cortes.
     #[test]
     fn stream_delivery_without_player_accumulates_the_audio() {
+        let _g = avi_term::report::test_guard();
         let mut delivery =
             open_delivery(false, true, "Fallo al reproducir").expect("sin reproductor");
-        delivery.begin_synthesis();
         assert!(!delivery.started());
         delivery.push(&[1, 2]).expect("acumular");
         delivery.push(&[3]).expect("acumular");
@@ -8471,6 +8629,103 @@ mod tests {
         assert_eq!(stats.pcm, vec![1, 2, 3]);
         assert_eq!(stats.first_audio_ms, None);
         assert_eq!(stats.stalls, 0);
+    }
+
+    /// Registro de la última etapa abierta con la etiqueta de `stage`.
+    fn record_of(
+        snapshot: &avi_term::report::Snapshot,
+        stage: &stage::Stage,
+    ) -> avi_term::report::StageRecord {
+        snapshot
+            .stages
+            .iter()
+            .rev()
+            .find(|record| record.label == stage.label)
+            .cloned()
+            .expect("la etapa está en el registro")
+    }
+
+    /// El primer audio es una sola medida, `first_audio_at − inicio de Síntesis`:
+    /// `Reproducción` empieza en la primera muestra, `Síntesis` se cierra al
+    /// terminar la síntesis y el dato de la línea, el extra del cierre y el
+    /// valor del JSON son el mismo número.
+    #[test]
+    fn overlapped_stages_share_a_single_first_audio_measure() {
+        use std::time::Duration;
+        let _g = avi_term::report::test_guard();
+        let progress = PhaseProgress::new();
+        progress.phase(&stage::SYNTHESIZING);
+        let began = record_of(&avi_term::report::snapshot(), &stage::SYNTHESIZING).start;
+        let first_audio_at = began + Duration::from_millis(600);
+        let synthesis_end = began + Duration::from_millis(1400);
+        let playback_end = began + Duration::from_millis(3500);
+        let sounding = |stalls| audio::PlaybackStats {
+            first_audio_at: Some(first_audio_at),
+            stalls,
+        };
+
+        let mut stages = SynthesisStages::default();
+        stages.observe(&progress, sounding(0));
+        stages.synthesis_finished(&progress, sounding(0), synthesis_end);
+        stages.playback_finished(&progress, sounding(1), playback_end);
+
+        let snapshot = avi_term::report::snapshot();
+        let synthesis = record_of(&snapshot, &stage::SYNTHESIZING);
+        let playing = record_of(&snapshot, &stage::PLAYING);
+        assert_eq!(synthesis.end, Some(synthesis_end));
+        assert_eq!(synthesis.note.as_deref(), Some("primer audio 0,6 s"));
+        assert_eq!(playing.start, first_audio_at);
+        assert_eq!(playing.end, Some(playback_end));
+        assert_eq!(
+            playing.note.as_deref(),
+            Some("en paralelo con la síntesis · 1 corte")
+        );
+        let first_audio = first_audio_offset(&snapshot, first_audio_at);
+        assert_eq!(first_audio, Some(Duration::from_millis(600)));
+        assert_eq!(
+            streaming_closing_extras(first_audio.map(|d| d.as_millis() as u64), 1),
+            vec!["primer audio 0,6 s".to_string(), "1 corte".to_string()],
+            "el cierre repite el dato de la línea de Síntesis"
+        );
+        let _elapsed = progress.close();
+    }
+
+    /// Si la síntesis termina antes de que suene la primera muestra,
+    /// `Reproducción` se abre después de cerrarla y no lleva el dato «en
+    /// paralelo con la síntesis».
+    #[test]
+    fn playback_opened_after_the_synthesis_has_no_parallel_note() {
+        use std::time::Duration;
+        let _g = avi_term::report::test_guard();
+        let progress = PhaseProgress::new();
+        progress.phase(&stage::SYNTHESIZING);
+        let began = record_of(&avi_term::report::snapshot(), &stage::SYNTHESIZING).start;
+        let first_audio_at = began + Duration::from_millis(900);
+        let synthesis_end = began + Duration::from_millis(500);
+        let silent = audio::PlaybackStats {
+            first_audio_at: None,
+            stalls: 0,
+        };
+
+        let mut stages = SynthesisStages::default();
+        stages.synthesis_finished(&progress, silent, synthesis_end);
+        let sounding = audio::PlaybackStats {
+            first_audio_at: Some(first_audio_at),
+            stalls: 0,
+        };
+        stages.playback_finished(&progress, sounding, began + Duration::from_millis(2000));
+
+        let snapshot = avi_term::report::snapshot();
+        let synthesis = record_of(&snapshot, &stage::SYNTHESIZING);
+        let playing = record_of(&snapshot, &stage::PLAYING);
+        assert_eq!(synthesis.end, Some(synthesis_end));
+        assert_eq!(
+            synthesis.note, None,
+            "aún no había primer audio al cerrarla"
+        );
+        assert_eq!(playing.start, first_audio_at);
+        assert_eq!(playing.note, None);
+        let _elapsed = progress.close();
     }
 
     /// La traducción pura fija la etapa del catálogo y el texto activo de cada
@@ -9292,14 +9547,24 @@ mod tests {
             .await
             .expect("el doble debe responder cabeceras");
         let progress = CountingProgress::default();
-        let chunk =
-            next_chunk_repainting(&mut resp, std::time::Duration::from_millis(1100), &progress)
-                .await;
+        let mut observed = 0usize;
+        let chunk = next_chunk_repainting(
+            &mut resp,
+            std::time::Duration::from_millis(1100),
+            &progress,
+            &mut || observed += 1,
+        )
+        .await;
         assert!(chunk.is_none(), "sin fragmentos debe agotar el plazo");
         assert!(
             progress.repaints() >= 3,
             "debe repintar cada 250 ms: {}",
             progress.repaints()
+        );
+        assert_eq!(
+            observed,
+            progress.repaints(),
+            "cada repintado también refleja la reproducción"
         );
     }
 

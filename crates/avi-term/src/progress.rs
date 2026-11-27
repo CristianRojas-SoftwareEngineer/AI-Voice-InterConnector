@@ -480,6 +480,49 @@ impl PhaseProgress {
         }
     }
 
+    /// Como [`PhaseProgress::note`], sobre la etapa viva `stage` sea la
+    /// principal o la segunda abierta con [`PhaseProgress::overlap`]. Sin ninguna
+    /// etapa viva con ese identificador no hace nada.
+    pub fn note_stage(&self, stage: &'static Stage, text: &str) {
+        let (mut inner, mut rep) = self.lock_both();
+        let inner = &mut *inner;
+        let target = [inner.current.as_mut(), inner.overlapped.as_mut()]
+            .into_iter()
+            .flatten()
+            .find(|current| current.label == stage.label);
+        if let Some(current) = target {
+            current.note = Some(text.to_string());
+            rep.set_note(current.id, text);
+        }
+    }
+
+    /// Cambia el texto activo de la etapa viva `stage` (la principal o la
+    /// segunda) sin abrir ni cerrar ninguna etapa, a diferencia de
+    /// [`PhaseProgress::phase_with`]. Sin ninguna etapa viva con ese
+    /// identificador no hace nada. Repinta si la etapa es la principal.
+    pub fn live_text(&self, stage: &'static Stage, text: &str) {
+        let (mut inner, _rep) = self.lock_both();
+        if let Some(overlapped) = inner
+            .overlapped
+            .as_mut()
+            .filter(|current| current.label == stage.label)
+        {
+            overlapped.active = text.to_string();
+            return;
+        }
+        let Some(current) = inner
+            .current
+            .as_mut()
+            .filter(|current| current.label == stage.label)
+        else {
+            return;
+        };
+        current.active = text.to_string();
+        if self.enabled && self.tty {
+            self.paint(&mut inner);
+        }
+    }
+
     /// Sustituye la línea activa completa de la etapa en curso. Sin terminal
     /// no escribe nada.
     pub fn live(&self, line: String) {
