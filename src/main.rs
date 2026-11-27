@@ -2026,14 +2026,14 @@ async fn handle_translate(
             "El texto a traducir está vacío.",
         ));
     }
-    // Passthrough: origen == destino → texto intacto, sin motor
+    // Passthrough: origen == destino → texto intacto, sin motor, sin cabecera
+    // ni etapas: solo el resultado etiquetado.
     if source == target {
+        let progress = PhaseProgress::new();
+        progress.result(Some("Traducción"), text);
+        progress.close();
         if json_mode {
-            emit_raw_json(
-                json!({ "translated": text, "source_language": source, "target_language": target }),
-            );
-        } else {
-            println!("{}", text);
+            emit_raw_json(translation_envelope(text, source, target));
         }
         return Ok(());
     }
@@ -2042,25 +2042,30 @@ async fn handle_translate(
     let use_daemon = route_to_daemon(daemon_mode).await?;
     // La cabecera va tras validar la invocación y antes del primer acceso a
     // recursos (modelo, daemon): un error de recurso sale con ella.
-    avi_term::line::context(&format!(
-        "Traducción {} · {}",
-        languages_label(source, target),
-        route_label(use_daemon)
-    ));
+    avi_term::line::context_with(
+        &format!(
+            "Traducción {} · {}",
+            languages_label(source, target),
+            route_label(use_daemon)
+        ),
+        &[
+            ("source_language", text_value(source)),
+            ("target_language", text_value(target)),
+            ("route", text_value(route_label(use_daemon))),
+        ],
+    );
     if use_daemon {
         // Única etapa del comando: no deja su línea y queda solo el cierre.
         let progress = PhaseProgress::new().single_stage();
         progress.phase(&stage::TRANSLATING);
         let result = translate_via_daemon(&client, text, source, target, &progress).await;
         if let Ok((translated, _, _)) = &result {
-            progress.result(None, translated);
+            progress.result(Some("Traducción"), translated);
         }
         finish_progress(progress, &result, "Traducción completada", |_| Vec::new());
         let (translated, source, target) = result?;
         if json_mode {
-            emit_raw_json(
-                json!({ "translated": translated, "source_language": source, "target_language": target }),
-            );
+            emit_raw_json(translation_envelope(&translated, &source, &target));
         }
         return Ok(());
     }
@@ -2099,7 +2104,7 @@ async fn handle_translate(
                 )
             });
         if let Ok(translated) = &result {
-            progress.result(None, translated);
+            progress.result(Some("Traducción"), translated);
         }
         finish_progress(progress, &result, "Traducción completada", |_| Vec::new());
         let translated = match result {
@@ -2107,12 +2112,31 @@ async fn handle_translate(
             Err(e) => return Err(e),
         };
         if json_mode {
-            emit_raw_json(
-                json!({ "translated": translated, "source_language": source, "target_language": target }),
-            );
+            emit_raw_json(translation_envelope(&translated, source, target));
         }
         Ok(())
     }
+}
+
+/// Desenlace común de una cancelación tras una pregunta: sin cuerpo, el
+/// separador y `Cancelado; no se ha borrado nada.` por stderr en los dos modos
+/// y, con `--json`, el envelope `body` con `stages: []`.
+fn finish_cancelled(json_mode: bool, mut body: Value) {
+    avi_term::line::special_closing(avi_term::line::SpecialClosing::Cancelled);
+    if json_mode {
+        body["stages"] = json!([]);
+        emit_raw_json(body);
+    }
+}
+
+/// Envelope `--json` de `translate`.
+fn translation_envelope(translated: &str, source: &str, target: &str) -> Value {
+    json!({
+        "status": "translated",
+        "translated": translated,
+        "source_language": source,
+        "target_language": target,
+    })
 }
 
 /// Traducción opt-in previa a la síntesis: passthrough si origen y destino
@@ -2557,6 +2581,12 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     format!("La voz '{}' no existe.", name),
                 ));
             }
+            // La cabecera va tras validar nombre, fábrica y existencia, y antes
+            // del plan de borrado y de la pregunta.
+            avi_term::line::context_with(
+                &format!("Borrado de la voz {name}"),
+                &[("voice", text_value(name.as_str()))],
+            );
             // Los audios sintetizados se van con su voz. Siempre se muestra el
             // plan y se pide la confirmación destructiva antes de borrar nada,
             // también cuando la voz no tiene ninguno.
@@ -2601,7 +2631,9 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let mut input = stdin.lock();
                 // La espera de la respuesta no cuenta como trabajo del comando.
                 avi_term::report::begin_question();
-                let decision = lifecycle::confirm::confirm(
+                // La cancelación la pinta el cierre especial detrás del
+                // separador, no el texto de `confirm`.
+                let decision = lifecycle::confirm::confirm_without_cancel_notice(
                     &lifecycle::confirm::Confirmation {
                         kind: lifecycle::confirm::Kind::Destructive,
                         question: &question,
@@ -2621,16 +2653,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 decision.map_err(lifecycle_error_to_cli)?
             };
             if decision == lifecycle::confirm::Decision::Cancelled {
-                if json_mode {
-                    emit_raw_json(json!({
+                finish_cancelled(
+                    json_mode,
+                    json!({
                         "status": "cancelled",
                         "voice": name,
                         "removed_speech": Vec::<String>::new(),
-                    }));
-                }
-                // `confirm::confirm` ya escribió «Cancelado; no se ha borrado
-                // nada.» por stderr: el handler no lo repite, porque el literal
-                // es del motor de confirmación y saldría dos veces.
+                    }),
+                );
                 return Ok(());
             }
             // Única etapa del comando: no deja su línea y queda solo el cierre.
@@ -3789,11 +3819,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 audio_source_label(audio.as_deref(), mic_max),
                 route_label(use_daemon)
             );
-            // El recorrido se declara antes de abrir ninguna etapa. La limpieza
-            // de ruido solo es una etapa propia en la ruta local: el daemon
-            // transcribe en una petición sin eventos y la limpia dentro de ella.
+            // El recorrido se declara antes de abrir ninguna etapa y es el mismo
+            // en las dos vías: el daemon emite eventos de limpieza y de
+            // transcripción.
             avi_term::report::declare(Pipeline::new(vec![
-                input_phase(mic, denoise && !use_daemon),
+                input_phase(mic, denoise),
                 phase_spec("text", "Texto", "Texto", vec![&stage::TRANSCRIBING]),
             ]));
             // La cabecera va tras validar la invocación y antes del primer
@@ -4651,16 +4681,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     decision.map_err(lifecycle_error_to_cli)?
                 };
                 if decision == lifecycle::confirm::Decision::Cancelled {
-                    // Sin cuerpo: separador y `Cancelado; no se ha borrado nada.`
-                    avi_term::line::special_closing(avi_term::line::SpecialClosing::Cancelled);
-                    if json_mode {
-                        emit_raw_json(json!({
-                            "status": "cancelled",
-                            "label": label,
-                            "voice": voice,
-                            "stages": [],
-                        }));
-                    }
+                    finish_cancelled(
+                        json_mode,
+                        json!({ "status": "cancelled", "label": label, "voice": voice }),
+                    );
                     return Ok(());
                 }
             }
@@ -6695,8 +6719,9 @@ async fn route_to_daemon(mode: DaemonMode) -> Result<bool, CliError> {
     }
 }
 
-/// POST /transcribe al daemon: codifica PCM i16 LE 16 kHz mono a base64 y devuelve
-/// el texto transcrito; el handler emite el envelope local ({text, source}).
+/// POST /transcribe al daemon: codifica PCM i16 LE 16 kHz mono a base64, consume
+/// el stream NDJSON (`started` → limpieza opcional → `transcribe` → `result`) y
+/// devuelve el texto transcrito; el handler emite el envelope local.
 async fn transcribe_via_daemon(
     client: &reqwest::Client,
     audio: Option<&str>,
@@ -6718,7 +6743,9 @@ async fn transcribe_via_daemon(
         "El audio de la transcripción",
     )
     .await?;
-    progress.phase(&stage::TRANSCRIBING);
+    // Las etapas `Limpieza` y `Transcripción` las abre el stream con sus
+    // eventos; hasta el primero solo corre la etapa transitoria de arranque.
+    progress.phase(&stage::STARTED);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mut payload =
@@ -6726,30 +6753,32 @@ async fn transcribe_via_daemon(
     if denoise {
         payload["denoise"] = serde_json::json!(true);
     }
-    // La espera se repinta con el indicador: `/transcribe` devuelve JSON plano
-    // y no emite eventos, así que sin el repintado la fase se quedaría
-    // con el mismo tiempo. `await_with_progress` repinta cada
-    // `PROGRESS_REPAINT_INTERVAL` mientras la petición está pendiente.
-    let resp = await_with_progress(
-        progress,
-        client
-            .post(format!("http://{}/transcribe", client_addr))
-            .json(&payload)
-            .send(),
+    // El envío espera solo las cabeceras (la respuesta 200 sale tras validar
+    // barato); el trabajo se consume como stream con inactividad de 1500 ms y
+    // el failsafe total hasta el evento final.
+    let fut = client
+        .post(format!("http://{}/transcribe", client_addr))
+        .json(&payload)
+        .send();
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        await_with_progress(progress, fut),
     )
     .await
+    .map_err(|_| {
+        CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            format!("El daemon en {} no respondió a tiempo.", client_addr),
+        )
+    })?
     .map_err(|e| daemon_connect_error(&client_addr, &e))?;
     check_daemon_version(&resp)?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let val: Value = resp.json().await.map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("Respuesta del daemon no es JSON: {}", e),
-        )
-    })?;
+    let val =
+        consume_ndjson_stream(resp, StreamResult::Transcribe, progress, &mut RejectAudio).await?;
     let text = val["text"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::TranscriptionFailed,
@@ -6924,6 +6953,7 @@ enum StreamResult {
     Synthesize,
     Clone,
     Dub,
+    Transcribe,
 }
 
 impl StreamResult {
@@ -6932,6 +6962,7 @@ impl StreamResult {
             Self::Synthesize => "synthesize",
             Self::Clone => "clone",
             Self::Dub => "dub",
+            Self::Transcribe => "transcribe",
         }
     }
 }
@@ -7946,6 +7977,17 @@ mod tests {
             StageOutcome::Skipped("descartado".to_string())
         );
         progress.close();
+    }
+
+    /// La cancelación de una pregunta no deja etapas en el registro: la pregunta
+    /// se abre y se cierra sin confirmar, y el desenlace común no abre ninguna.
+    #[test]
+    fn cancellation_after_a_question_leaves_no_stages() {
+        let _g = avi_term::report::test_guard();
+        avi_term::report::begin_question();
+        avi_term::report::end_question(false);
+        finish_cancelled(false, json!({ "status": "cancelled" }));
+        assert!(avi_term::report::snapshot().stages.is_empty());
     }
 
     #[test]

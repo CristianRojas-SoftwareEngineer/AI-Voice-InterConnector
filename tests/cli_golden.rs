@@ -2378,14 +2378,7 @@ fn daemon_of_another_protocol_version_is_rejected() {
 /// línea `Solución:` y con `--json` conservando el `reason`.
 #[test]
 fn transcribe_daemon_empty_transcript_exits_2_with_solution() {
-    let fake = FakeDaemon::start(
-        400,
-        serde_json::json!({
-            "status": "error",
-            "reason": "empty_transcript",
-            "message": "No se reconoció voz en el audio.",
-        }),
-    );
+    let fake = FakeDaemon::start_events(transcribe_empty_events());
     let (sandbox, envs) = contract_sandbox("transcribe_daemon_empty");
     let dir = sandbox.path();
     fake.publish_in(&dir.join("data"));
@@ -3288,6 +3281,10 @@ fn voice_list_respects_envelope_contract() {
             .any(|v| v == &Value::String("default".to_string())),
         "debe listarse la voz de fábrica `default`"
     );
+    // Es una consulta: sin cabecera de etapas, sin `status` ni claves de etapas.
+    for key in ["context", "stages", "total_ms", "status"] {
+        assert!(actual.get(key).is_none(), "`voice list` no lleva `{key}`");
+    }
 }
 
 #[test]
@@ -5205,6 +5202,64 @@ mod tts {
             .join("default")
             .join("uno.wav")
             .is_file());
+    }
+
+    /// `voice remove --yes` abre con su cabecera, deja el cierre con tiempo y
+    /// emite `removed` con `context`, `stages` y `total_ms`; su stderr es el
+    /// mismo con y sin `--json`.
+    #[test]
+    fn voice_remove_yes_renders_header_and_keeps_stderr_with_json() {
+        let mut stderrs = Vec::new();
+        for (tag, json) in [
+            ("voice_remove_render_text", false),
+            ("voice_remove_render_json", true),
+        ] {
+            let inst = IsolatedInstance::new(tag);
+            create_user_voice(&inst, "locutor", &[]);
+            let mut args = vec!["voice", "remove", "--name", "locutor", "--yes"];
+            if json {
+                args.insert(0, "--json");
+            }
+            let (code, stdout, stderr) = run_capture(&args, &inst.contract_args());
+            assert_eq!(code, 0, "{stderr}");
+            let stderr = normalize_times(&stderr, &inst.dir);
+            let lines: Vec<&str> = stderr.lines().collect();
+            assert_eq!(lines[0], "Borrado de la voz locutor", "{stderr}");
+            assert!(
+                stderr.contains("✓ Voz locutor borrada en <t>"),
+                "falta el cierre con tiempo:\n{stderr}"
+            );
+            if json {
+                let envelope: Value =
+                    serde_json::from_str(stdout.trim()).expect("un único envelope");
+                assert_eq!(envelope["status"], "removed", "{envelope}");
+                assert_eq!(envelope["context"]["voice"], "locutor", "{envelope}");
+                assert!(envelope["total_ms"].is_u64(), "{envelope}");
+                assert_eq!(envelope["stages"][0]["stage"], "removing", "{envelope}");
+            }
+            stderrs.push(stderr);
+        }
+        assert_eq!(stderrs[0], stderrs[1], "--json no cambia stderr");
+    }
+
+    /// Sin terminal y sin `--yes`, `confirmation_required` sale con la cabecera
+    /// y sin etapas abiertas, y no borra nada.
+    #[test]
+    fn voice_remove_confirmation_required_keeps_the_header_and_no_stages() {
+        let inst = IsolatedInstance::new("voice_remove_confirm_header");
+        create_user_voice(&inst, "locutor", &[]);
+        let (code, stdout, stderr) = run_capture(
+            &["--json", "voice", "remove", "--name", "locutor"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.starts_with("Borrado de la voz locutor"),
+            "falta la cabecera:\n{stderr}"
+        );
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(envelope["reason"], "confirmation_required", "{envelope}");
+        assert!(inst.dir.join("voices").join("locutor").is_dir());
     }
 
     // ─── say ───────────────────────────────────────────────────────────
@@ -10091,16 +10146,38 @@ fn translate_daemon_single_stage_leaves_only_the_closing_line() {
         if json {
             args.insert(0, "--json");
         }
-        let (code, _stdout, stderr) = run_text_env(&args, &envs);
+        let (code, stdout, stderr) = run_capture(&args, &envs);
         assert_eq!(code, 0, "json={json}: {stderr}");
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines[0], "Traducción es → en · daemon", "{stderr}");
         assert!(
-            stderr.contains("Traducción completada"),
+            lines
+                .iter()
+                .any(|line| line.starts_with("✓ Traducción completada en ")),
             "el cierre da el resultado: {stderr}"
         );
         assert!(
             !stderr.contains("✓ Traducción  "),
             "la etapa única no deja su línea: {stderr}"
         );
+        assert!(
+            stderr.contains("│ Traducción: Hello"),
+            "el resultado sale etiquetado: {stderr}"
+        );
+        if json {
+            let envelope: Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{stdout}"));
+            assert_eq!(envelope["status"], "translated", "{envelope}");
+            assert_eq!(envelope["translated"], "Hello", "{envelope}");
+            assert_eq!(envelope["source_language"], "es", "{envelope}");
+            assert_eq!(envelope["target_language"], "en", "{envelope}");
+            assert_eq!(envelope["context"]["source_language"], "es", "{envelope}");
+            assert_eq!(envelope["context"]["target_language"], "en", "{envelope}");
+            assert_eq!(envelope["context"]["route"], "daemon", "{envelope}");
+            assert!(envelope["total_ms"].is_u64(), "{envelope}");
+        } else {
+            assert_eq!(stdout.trim(), "Traducción: Hello");
+        }
         // Se quita la duración del cierre para comparar los dos modos.
         normalized.push(
             stderr
@@ -10110,6 +10187,40 @@ fn translate_daemon_single_stage_leaves_only_the_closing_line() {
         );
     }
     assert_eq!(normalized[0], normalized[1], "--json no cambia stderr");
+}
+
+/// `translate` con el mismo idioma no abre cabecera ni etapas: stdout lleva
+/// `Traducción: <texto>` y el JSON, `status: "translated"` sin `context`.
+#[test]
+fn translate_passthrough_has_no_header_nor_stages() {
+    let args = [
+        "translate",
+        "--text",
+        "Hola",
+        "--source-language",
+        "es",
+        "--target-language",
+        "es",
+    ];
+    let (code, stdout, stderr) = run_capture(&args, &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout.trim(), "Traducción: Hola");
+    assert!(!stderr.contains("Traducción es"), "sin cabecera: {stderr}");
+    assert!(!stderr.contains("✓"), "sin cierre ni etapas: {stderr}");
+
+    let mut json_args = vec!["--json"];
+    json_args.extend_from_slice(&args);
+    let (code, stdout, json_stderr) = run_capture(&json_args, &[]);
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+    assert_eq!(envelope["status"], "translated", "{envelope}");
+    assert_eq!(envelope["translated"], "Hola", "{envelope}");
+    assert_eq!(envelope["source_language"], "es", "{envelope}");
+    assert_eq!(envelope["target_language"], "es", "{envelope}");
+    for key in ["context", "stages", "total_ms"] {
+        assert!(envelope.get(key).is_none(), "sin `{key}`: {envelope}");
+    }
 }
 
 /// Envía la interrupción de consola al hijo. En Windows es `CTRL_BREAK_EVENT` al
@@ -10590,18 +10701,78 @@ fn synthesize_daemon_renders_phases_and_keeps_stderr_with_json() {
     );
 }
 
+/// Eventos de un `/transcribe` que termina bien: `started`, el progreso de la
+/// transcripción y el `result` con `text`.
+fn transcribe_ok_events(text: &str) -> Vec<Value> {
+    vec![
+        serde_json::json!({ "event": "started" }),
+        serde_json::json!({ "event": "progress", "stage": "transcribe" }),
+        serde_json::json!({ "event": "result", "text": text, "source_language": "es" }),
+    ]
+}
+
+/// Eventos de un `/transcribe` cuya transcripción sale vacía: el error viaja
+/// dentro del stream, después de `started` y del progreso.
+fn transcribe_empty_events() -> Vec<Value> {
+    vec![
+        serde_json::json!({ "event": "started" }),
+        serde_json::json!({ "event": "progress", "stage": "transcribe" }),
+        serde_json::json!({
+            "event": "error",
+            "reason": "empty_transcript",
+            "message": "No se reconoció voz en el audio.",
+        }),
+    ]
+}
+
+/// Con `--denoise`, `speech transcribe` por daemon declara y pinta `Limpieza`
+/// como segunda etapa del recorrido, igual que en la vía local.
+#[cfg(feature = "native-denoise")]
+#[test]
+fn transcribe_daemon_with_denoise_renders_the_cleaning_stage() {
+    let events = vec![
+        serde_json::json!({ "event": "started" }),
+        serde_json::json!({ "event": "progress", "stage": "denoise" }),
+        serde_json::json!({ "event": "progress", "stage": "transcribe" }),
+        serde_json::json!({ "event": "result", "text": "Hola.", "source_language": "es" }),
+    ];
+    let (code, _stdout, stderr) =
+        transcribe_against_fake_daemon_with("transcribe-denoise", false, events, &["--denoise"]);
+    assert_eq!(code, 0, "{stderr}");
+    for expected in [
+        "  [1/3] ✓ Lectura",
+        "  [2/3] ✓ Limpieza",
+        "  [3/3] ✓ Transcripción",
+    ] {
+        assert!(
+            stderr.lines().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{stderr}"
+        );
+    }
+}
+
 /// Ejecuta `speech transcribe --daemon` sobre un WAV de silencio contra un daemon
-/// falso que responde `status`/`body` a `/transcribe`, con stdout redirigido, y
-/// devuelve (código, stdout, stderr normalizado). Con `json` añade `--json`.
+/// falso que emite `events` como stream NDJSON en `/transcribe`, con stdout
+/// redirigido, y devuelve (código, stdout, stderr normalizado). Con `json` añade
+/// `--json`.
 fn transcribe_against_fake_daemon(
     tag: &str,
     json: bool,
-    status: u16,
-    body: Value,
+    events: Vec<Value>,
+) -> (i32, String, String) {
+    transcribe_against_fake_daemon_with(tag, json, events, &[])
+}
+
+/// Como [`transcribe_against_fake_daemon`], con argumentos extra de la CLI.
+fn transcribe_against_fake_daemon_with(
+    tag: &str,
+    json: bool,
+    events: Vec<Value>,
+    extra: &[&str],
 ) -> (i32, String, String) {
     let (sandbox, envs) = contract_sandbox(tag);
     let dir = sandbox.path();
-    let fake = FakeDaemon::start(status, body);
+    let fake = FakeDaemon::start_events(events);
     fake.publish_in(&dir.join("data"));
     let wav = dir.join("entrevista.wav");
     write_silent_wav(&wav, 1);
@@ -10615,6 +10786,7 @@ fn transcribe_against_fake_daemon(
         "--source-language",
         "es",
     ];
+    args.extend_from_slice(extra);
     if json {
         args.insert(0, "--json");
     }
@@ -10627,9 +10799,9 @@ fn transcribe_against_fake_daemon(
 /// etapas; su stderr es el mismo con y sin `--json`.
 #[test]
 fn transcribe_daemon_renders_phases_and_keeps_stderr_with_json() {
-    let body = serde_json::json!({ "text": "Hola, mi nombre es Cristian." });
+    let events = transcribe_ok_events("Hola, mi nombre es Cristian.");
     let (code, stdout, text_stderr) =
-        transcribe_against_fake_daemon("transcribe-phases-text", false, 200, body.clone());
+        transcribe_against_fake_daemon("transcribe-phases-text", false, events.clone());
     assert_eq!(code, 0, "{text_stderr}");
     let lines: Vec<&str> = text_stderr.lines().collect();
     assert_eq!(
@@ -10655,7 +10827,7 @@ fn transcribe_daemon_renders_phases_and_keeps_stderr_with_json() {
     assert_eq!(stdout.trim(), "Transcripción: Hola, mi nombre es Cristian.");
 
     let (code, json_stdout, json_stderr) =
-        transcribe_against_fake_daemon("transcribe-phases-json", true, 200, body);
+        transcribe_against_fake_daemon("transcribe-phases-json", true, events);
     assert_eq!(code, 0, "{json_stderr}");
     assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
     let envelope: Value = serde_json::from_str(json_stdout.trim())
@@ -10694,13 +10866,9 @@ fn transcribe_daemon_renders_phases_and_keeps_stderr_with_json() {
 /// con y sin `--json`.
 #[test]
 fn transcribe_daemon_empty_transcript_leaves_a_failed_stage() {
-    let body = serde_json::json!({
-        "status": "error",
-        "reason": "empty_transcript",
-        "message": "No se reconoció voz en el audio.",
-    });
+    let events = transcribe_empty_events();
     let (code, _stdout, text_stderr) =
-        transcribe_against_fake_daemon("transcribe-empty-text", false, 400, body.clone());
+        transcribe_against_fake_daemon("transcribe-empty-text", false, events.clone());
     assert_eq!(code, 2, "{text_stderr}");
     let failed = text_stderr
         .find("✗ Transcripción")
@@ -10710,7 +10878,7 @@ fn transcribe_daemon_empty_transcript_leaves_a_failed_stage() {
     assert!(failed < rule && rule < error, "{text_stderr}");
 
     let (code, json_stdout, json_stderr) =
-        transcribe_against_fake_daemon("transcribe-empty-json", true, 400, body);
+        transcribe_against_fake_daemon("transcribe-empty-json", true, events);
     assert_eq!(code, 2, "{json_stderr}");
     assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
     let envelope: Value = serde_json::from_str(json_stdout.trim())
@@ -11086,9 +11254,9 @@ mod parity {
     /// `speech transcribe` por daemon: etapas, fases y desenlaces idénticos.
     #[test]
     fn transcribe_stderr_stages_match_the_json_stages() {
-        let body = serde_json::json!({ "text": "Hola, mi nombre es Cristian." });
+        let events = transcribe_ok_events("Hola, mi nombre es Cristian.");
         let (code, stdout, stderr) =
-            transcribe_against_fake_daemon("parity-transcribe", true, 200, body);
+            transcribe_against_fake_daemon("parity-transcribe", true, events);
         assert_eq!(code, 0, "{stderr}");
         let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
         assert_eq!(painted_stages(&stderr).len(), 2, "{stderr}");
