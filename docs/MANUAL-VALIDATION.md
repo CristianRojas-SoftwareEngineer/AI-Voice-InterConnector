@@ -301,8 +301,9 @@ ai-voice-interconnector --json speech denoise clip.wav --dry-run
 **Esperado**: escribe la versión limpia en el directorio indicado, imprime la ruta
 de cada archivo generado por **stdout**, muestra por stderr una etapa por archivo
 con su porcentaje y cierra con `✓ Limpieza de ruido completada en … · N archivos limpios`,
-**exit 0**; `--dry-run` muestra el plan por stdout sin escribir, y
-`Simulación: no se ha modificado nada.` por stderr. Una entrada inexistente
+**exit 0**; `--dry-run` abre con la cabecera `Limpieza de ruido · N archivos`, muestra el plan
+por stdout sin escribir (`<entrada> → <salida> (se procesaría)`) y cierra con
+`✓ Simulación completada · no se ha borrado nada`. Una entrada inexistente
 sale con **exit 3**; una entrada sin audio o un destino ya existente sin
 `--overwrite`, con **exit 2**; modelo ausente, con **exit 4**; FFmpeg ausente o
 error de E/S, con **exit 1**.
@@ -335,7 +336,7 @@ ai-voice-interconnector speech transcribe --mic --source-language es < /dev/null
 ```bash
 ai-voice-interconnector speech transcribe --mic --duration 3 --source-language es ; echo "exit=$?"
 ```
-**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic. Durante la grabación, en una terminal real, stderr muestra `● Grabando 0:01 / 0:03` con el medidor de nivel, y el contador avanza; al terminar queda `✓ Audio grabado`. Sin terminal solo aparece una vez `Grabando (máximo 0:03)…`. Si no hablas (silencio), aparece `Aviso: No se detectó voz en la grabación (nivel máximo … dBFS); comprueba que el micrófono no esté silenciado.` y el comando continúa.
+**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic. Durante la grabación, en una terminal real, stderr muestra `● Grabando 0:01 / 0:03` con el medidor de nivel, y el contador avanza; al terminar queda la etapa `✓ Grabación`. Sin terminal solo aparece una vez `Grabando (máximo 0:03)…`. Si no hablas (silencio), aparece bajo la etapa `Grabación` el aviso `⚠ No se detectó voz en la grabación (nivel máximo … dBFS); comprueba que el micrófono no esté silenciado.` y el comando continúa.
 
 **Ruta feliz push-to-talk** — en una terminal interactiva real:
 
@@ -352,7 +353,7 @@ ai-voice-interconnector speech transcribe --mic --source-language es
 ```bash
 AVI_PUSH_TO_TALK_MAX_SECS=5 ai-voice-interconnector speech transcribe --mic --source-language es
 ```
-**Esperado**: a los 5 s la captura se corta sola, en **stderr** aparece `Aviso: Se alcanzó el límite de grabación (0:05); se detiene.`, transcribe lo grabado y sale con **exit 0** (el techo **no** es error).
+**Esperado**: a los 5 s la captura se corta sola, en **stderr** aparece bajo la etapa `Grabación` el aviso `⚠ Se alcanzó el límite de grabación (0:05); se detiene.`, transcribe lo grabado y sale con **exit 0** (el techo **no** es error).
 
 **`dub` se comporta igual**: repite las cuatro comprobaciones con `speech dub --mic --source-language … --target-language …`. Las cuatro vías (transcribe/dub × directo/daemon) comparten la misma captura.
 
@@ -417,7 +418,7 @@ ai-voice-interconnector self uninstall --dry-run
 ai-voice-interconnector cleanup --all --dry-run
 ```
 
-**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `3,4 GB` y el prompt `¿Instalar el programa? [S/n] ` deja un espacio antes de la respuesta. La provisión abre su bloque con `Descargando 5 modelos:`; cada barra está etiquetada `[i/5] nombre`, muestra el porcentaje, el total real del modelo (no el de un archivo pequeño), la velocidad y `quedan` con un tiempo estable (nunca un valor absurdo; `quedan —` durante los primeros 2 s de cada modelo), y se repinta de forma continua aunque no lleguen bytes. Al completarse cada modelo queda una línea permanente `✓ [i/5]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… [i/5] nombre  <completado> de <total> · <duración>` cada 15 s. No existe una línea «Total:» propia de la provisión: el cierre es `✓ ai-voice-interconnector <versión> instalado en <total>`, con los detalles `PATH: …` y `Modelos: …` debajo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones escriben su plan por stdout —cada ruta una vez, con su categoría en español y tamaños con coma— y un único `Simulación: no se ha modificado nada.` por stderr; no abren ninguna etapa de borrado y no modifican el disco.
+**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `3,4 GB` y el prompt `¿Instalar el programa? [S/n] ` deja un espacio antes de la respuesta. La provisión hace de cada modelo una etapa `Descarga` numerada `[i/N]`: su línea viva muestra el porcentaje, el total real del modelo (no el de un archivo pequeño), el tamaño y la velocidad, y se repinta de forma continua aunque no lleguen bytes. Al completarse cada modelo queda una línea permanente `[i/N] ✓ nombre` con duración, tamaño y velocidad. Sin TTY cada etapa se anuncia una vez (`● Descargando nombre…`) y deja un latido cada 10 s. No existe una línea «Total:» propia de la provisión: el cierre es `✓ ai-voice-interconnector <versión> instalado en <total>`, con los detalles `PATH: …` y `Modelos: …` debajo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones abren con su cabecera, escriben su plan por stdout —cada ruta una vez, con su categoría en español y tamaños con coma— y cierran con un único `✓ Simulación completada · no se ha borrado nada`; no abren ninguna etapa de borrado y no modifican el disco.
 
 ## 10. Daemon
 
@@ -443,7 +444,7 @@ ai-voice-interconnector daemon stop
 ai-voice-interconnector daemon status
 ```
 
-**Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**, con las etapas `✓ Daemon iniciado`, `✓ Motor calentado` y el cierre `✓ Daemon listo en … · pid N` (si el calentamiento no termina en su plazo, el cierre es `✓ Daemon en marcha en … · pid N · …` con la causa en la misma línea); `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
+**Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**, con las etapas `✓ Arranque` y `✓ Calentamiento` y el cierre `✓ Daemon listo en … · pid N` (si el calentamiento no termina en su plazo, el cierre es `✓ Daemon en marcha en … · pid N · …` con la causa en la misma línea); `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
 
 **Esperas de la síntesis.** En una terminal real, con el daemon en marcha: (1) lanza un `say --daemon` con un texto largo y, mientras suena, otro `say --daemon` en una segunda terminal: el segundo muestra `Esperando turno para sintetizar…` y después `Sintetizando…` en la misma línea viva, **sin** ninguna línea `✓ Voz sintetizada`, y su `primer audio` incluye la espera; (2) un `say --daemon -v <otra_voz_clonada>` tras haber usado `default` muestra `Cargando la voz…` mientras el motor arranca con la otra voz.
 
@@ -565,8 +566,8 @@ ai-voice-interconnector speech transcribe --mic --source-language es
 ```
 
 **Esperado**: la línea `● Grabando … Enter para detener` se repinta en su
-**propia línea**, y al terminar la etapa queda `✓ Audio grabado` y la etapa
-«… Transcribiendo…» no queda pegada a ninguna otra. Lo mismo con el menú de
+**propia línea**, y al terminar queda la etapa `✓ Grabación` y la etapa
+«● Transcribiendo…» no queda pegada a ninguna otra. Lo mismo con el menú de
 `speech synthesize --play`: las opciones se leen en su propia línea, y la
 etapa no las arrastra.
 
@@ -599,11 +600,11 @@ ai-voice-interconnector self update 2> salida.txt
 ```
 
 **Esperado**: el fichero `salida.txt` no acumula líneas de la etapa repetidas:
-una etapa permanente se anuncia una vez (`… <texto>`), emite como mucho un
+una etapa permanente se anuncia una vez (`● <texto>`), emite como mucho un
 latido cada 10 s y deja su línea `✓` al terminar (salvo que sea la única
 etapa de trabajo del comando, que deja solo el cierre); una transitoria no escribe
 nada, y la actividad posterior no abre líneas nuevas. Sin color. Con
-`AVI_NO_PROGRESS=1` desaparecen las líneas de etapa, pero no el contexto ni el
+`AVI_NO_PROGRESS=1` desaparecen las líneas de etapa, pero no la cabecera ni el
 cierre. Vale cualquier comando con una espera larga:
 también `translate --daemon` o `speech transcribe --daemon` con la salida
 redirigida.
@@ -624,5 +625,5 @@ ruido con `--no-daemon`— y durante la grabación y la reproducción,
 porque un hilo repinta la línea mientras el trabajo corre. No hay excepción
 de reloj detenido: ningún tramo de más de 1 s sin bytes nuevos mientras el
 comando trabaja. Si el producto escribe un aviso mientras la etapa está
-abierta, el aviso (`Aviso: …`) aparece en su propia línea y la etapa se vuelve
-a pintar en el siguiente repintado.
+abierta, el aviso (`⚠ …`) aparece bajo esa etapa, en su propia línea, y la
+etapa se vuelve a pintar en el siguiente repintado.

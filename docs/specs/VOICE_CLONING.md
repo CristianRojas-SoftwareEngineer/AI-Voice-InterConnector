@@ -157,7 +157,7 @@ El motor ya cuenta con los componentes necesarios:
 | **RF-11** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
 | **RF-12** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
 | **RF-13** | Se valida el nombre antes de capturar. Sin `--force`, `VoiceStore::exists` detecta la colisión antes de capturar o leer la referencia, en las dos rutas, porque la CLI y el daemon comparten el directorio de datos; el daemon conserva su comprobación como defensa. Con `--force`, re-clonar reemplaza la voz y sus audios sintetizados: si la voz tiene audios sintetizados, la CLI pide la confirmación destructiva antes de capturar, en las dos rutas, y sin terminal exige `--yes` (si falta, exit 2 `confirmation_required` sin cambiar nada). El reemplazo lo hace `avi_store::replace_voice`, que borra `speech/<voz>/` antes de publicar la referencia nueva. Una voz de fábrica (`default`) no se clona, con o sin `--force`: la CLI la rechaza tras validar el nombre con exit 2 `cannot_clone_default`, antes de abrir el micrófono o leer la referencia, y el daemon con `400` `cannot_clone_default`, porque su contenido es el asset embebido que la inicialización del almacén restituye. |
-| **RF-14** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "removed_speech": ["<etiqueta>", ...], "schema_version": "7"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
+| **RF-14** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"status": "cloned", "name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "removed_speech": ["<etiqueta>", ...], "context": {...}, "total_ms": N, "stages": [...], "warnings": [...], "schema_version": "7"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
 
 ### 5.2 Requisitos no funcionales
 
@@ -278,11 +278,11 @@ voice clone --name <nombre> [--speech-reference <wav> | --mic [--duration <N>]]
   ├─ 5. Destino daemon: capturar antes de POST; el servidor conserva su comprobación de colisión como defensa y reemplaza con replace_voice; sin fallback a local
   ├─ 6. Clonado local: mic se escribe en avi_process::scratch::temp_wav; archivo usa su ruta original
   ├─ 7. Denoise único: CLI en ruta local; daemon con denoise:true para ejecución del servidor
-  ├─ 8. avi_tts::clone_voice y avi_store::replace_voice (referencia nueva y borrado de los audios sintetizados anteriores); JSON CLI con name, speech, precomputed, removed_speech, schema_version
+  ├─ 8. avi_tts::clone_voice y avi_store::replace_voice (referencia nueva y borrado de los audios sintetizados anteriores); JSON CLI con status "cloned", name, speech, precomputed, removed_speech, las claves comunes (context, total_ms, stages, warnings) y schema_version
   │
   └─ 8. Cierre y Emisión:
-        ├─ Salida humana: "Voz '<nombre>' clonada (N s)."
-        └─ Salida JSON global (--json, antes de `voice`): { "name": "...", "speech": "...", "precomputed": bool, "removed_speech": [...], "schema_version": "7" }
+        ├─ Salida humana: cierre "✓ Voz <nombre> clonada en N s" tras las etapas Lectura (o Grabación), Clonación y Guardado
+        └─ Salida JSON global (--json, antes de `voice`): { "status": "cloned", "name": "...", "speech": "...", "precomputed": bool, "removed_speech": [...], "context": {...}, "total_ms": N, "stages": [...], "warnings": [...], "schema_version": "7" }
 ```
 
 La tabla de errores de archivo conserva el orden previo del CLI: nombre, límite de referencia, routing/modelo y después comprobación de existencia/lectura según destino. Las guardas nuevas de micrófono no cambian ese orden.
@@ -477,7 +477,7 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 | **AC-07** | Una captura fija de 5 s | Se ejecuta `voice clone --name v1 --mic --duration 5` | La duración es objetivo; el PCM resultante se limita a 30 s (`30 * capture_rate` muestras), no se rellena y alimenta el flujo convergente de clonado. |
 | **AC-08** | Una voz existente en el store | Se clona con `--mic` sin `--force`, por cualquier ruta | Sale con exit `6` (`voice_exists`) antes de grabar. |
 | **AC-09** | Una voz ya existente con audios sintetizados guardados | Se clona con `--mic --force --yes` por daemon | Sobrescribe la voz, borra sus audios sintetizados (`removed_speech` los nombra) e inicia warm-on-clone (exit 0); la siguiente síntesis de la voz recarga el residente. Sin terminal y sin `--yes` sale con exit `2` (`confirmation_required`) sin grabar ni cambiar nada. La ruta local no mantiene un residente que precalentar. |
-| **AC-10** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ name, speech, precomputed, removed_speech, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |
+| **AC-10** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ status: "cloned", name, speech, precomputed, removed_speech, context, total_ms, stages, warnings, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |
 | **AC-11** | La ruta local explícita | Se ejecuta `voice clone --name v1 --mic --duration 5 --no-daemon` | Genera `reference.qvoice`, elimina temporales de scratch y emite `precomputed: false`. |
 | **AC-12** | La feature `native-denoise` | Se pasa `--denoise` con `--mic` | El audio capturado se procesa con DPDFNet antes de la extracción de x-vector. |
 | **AC-13** | Un sistema sin dispositivo de entrada predeterminado, o con uno inaccesible | Se ejecuta `--mic` | Sin dispositivo sale con exit `3` (`no_input_device`); con uno inaccesible, con exit `10` (`transcription_failed`); en ambos casos con mensaje descriptivo. |
