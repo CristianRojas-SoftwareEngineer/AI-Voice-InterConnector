@@ -209,6 +209,7 @@ fn provision_selection(sandbox: &Sandbox) {
 #[test]
 fn install_places_only_the_manifest_files_from_a_cluttered_bundle_dir() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("install-cluttered");
     sandbox.seed_env();
     let options = Sandbox::install_options();
@@ -259,6 +260,7 @@ fn install_places_only_the_manifest_files_from_a_cluttered_bundle_dir() {
 #[test]
 fn install_twice_is_idempotent() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("install-twice");
     sandbox.seed_env();
     let options = Sandbox::install_options();
@@ -374,39 +376,42 @@ fn install_twice_is_idempotent() {
     }
 }
 
-/// Líneas del resumen que hablan del `PATH`.
-fn summary_lines(summary: &[String]) -> Vec<&str> {
-    summary
-        .iter()
-        .map(String::as_str)
-        .filter(|l| l.trim_start().starts_with("PATH:"))
+/// Identificador de la última etapa del registro, o cero si no hay ninguna.
+fn last_stage_id() -> u64 {
+    avi_term::report::snapshot()
+        .stages
+        .last()
+        .map_or(0, |stage| stage.id)
+}
+
+/// Etiqueta y nota de las etapas abiertas después de la etapa `after`.
+fn stages_since(after: u64) -> Vec<(&'static str, Option<String>)> {
+    avi_term::report::snapshot()
+        .stages
+        .into_iter()
+        .filter(|stage| stage.id > after)
+        .map(|stage| (stage.label, stage.note))
         .collect()
 }
 
-/// **El resumen final dice el estado del `PATH` una vez, y lo dice en el estado.**
+/// **La etapa del `PATH` dice el estado una vez, como nota, y solo si lo escribió.**
 ///
-/// `final_summary` no copia la línea del `PATH` del **resumen previo** —que dice lo que se
-/// va a hacer— junto a la del **estado**. Si lo hiciera, en una instalación correcta el
-/// usuario leería, en el mismo bloque y en este orden:
-///
-/// ```text
-///   PATH:      se añadirá <dir> en el PATH del usuario
-///   PATH:      se añadió <dir>; las terminales que ya estaban abiertas no lo verán hasta reiniciarse.
-/// ```
-///
-/// Dos líneas para un hecho, y la primera en futuro y la segunda en pasado: leído de un
-/// tirón parece una contradicción. Afirma los **tres** estados posibles, porque la regla no
-/// es «omitir la primera línea» sino «dejar una sola, la del estado», y cada rama del
-/// `if` del resumen produce una prosa distinta que también hay que fijar.
+/// El estado del `PATH` ya no es una línea de un resumen final sino la nota de la etapa
+/// `Integración en el PATH`. Afirma los **tres** estados posibles: esta pasada reescribió
+/// el `PATH` (la nota dice `se añadió <dir>` y sale el aviso a las terminales ya
+/// abiertas), la integración ya estaba en pie (etapa sin nota y sin aviso) y
+/// `--no-modify-path` (no hay etapa, porque `apply_path` no toca nada).
 #[test]
-fn final_summary_reports_the_path_state_once() {
+fn install_path_stage_reports_the_path_state_once() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     // ── Estado 1: esta pasada **reescribió** el `PATH` ────────────────────────────
     let sandbox = Sandbox::new("path-new");
     sandbox.seed_env();
     let exe = sandbox.write_bundle(&sandbox.staging());
+    let before = last_stage_id();
     let first = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -419,22 +424,23 @@ fn final_summary_reports_the_path_state_once() {
         first.path_changed(),
         "la primera pasada reescribe el `PATH`, que es el estado que hay que probar"
     );
-    let lines = summary_lines(&first.summary);
+    let path_notes: Vec<_> = stages_since(before)
+        .into_iter()
+        .filter(|(label, _)| *label == avi_term::stage::PATH_ADD.label)
+        .collect();
     assert_eq!(
-        lines.len(),
+        path_notes.len(),
         1,
-        "el resumen final dice el `PATH` una sola vez, y no dos: {:?}",
-        first.summary
+        "la etapa del `PATH` sale una sola vez: {path_notes:?}"
+    );
+    let note = path_notes[0].1.clone().unwrap_or_default();
+    assert!(
+        note.contains("se añadió"),
+        "y la nota va en pasado, porque esta pasada lo escribió: {note}"
     );
     assert!(
-        lines[0].contains("se añadió"),
-        "y en pasado, porque esta pasada lo escribió: {}",
-        lines[0]
-    );
-    assert!(
-        !lines[0].contains("se añadirá"),
-        "y no en futuro: el resumen final no anuncia, informa: {}",
-        lines[0]
+        !note.contains("se añadirá"),
+        "y no en futuro: la nota no anuncia, informa: {note}"
     );
     assert!(
         first
@@ -447,6 +453,7 @@ fn final_summary_reports_the_path_state_once() {
 
     // ── Estado 2: la integración está en pie y esta pasada no la tocó ────────────
     let exe = sandbox.write_bundle(&sandbox.staging());
+    let before = last_stage_id();
     let second = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -456,11 +463,14 @@ fn final_summary_reports_the_path_state_once() {
         ))
         .expect("la segunda instalación se completa");
     assert!(!second.path_changed());
-    let lines = summary_lines(&second.summary);
-    assert!(
-        lines.is_empty(),
-        "en la repetición el cierre no repite lo que el plan ya dijo (que no se modifica): {:?}",
-        second.summary
+    let path_notes: Vec<_> = stages_since(before)
+        .into_iter()
+        .filter(|(label, _)| *label == avi_term::stage::PATH_ADD.label)
+        .collect();
+    assert_eq!(
+        path_notes,
+        vec![(avi_term::stage::PATH_ADD.label, None)],
+        "en la repetición la etapa sale sin nota: no se tocó nada"
     );
     assert!(
         !second
@@ -475,7 +485,8 @@ fn final_summary_reports_the_path_state_once() {
     let s = Sandbox::new("path-not-needed");
     s.seed_env();
     let exe = s.write_bundle(&s.staging());
-    let without_path = runtime
+    let before = last_stage_id();
+    runtime
         .block_on(install::install(
             &s.install_env(&exe),
             &install::Options {
@@ -486,17 +497,11 @@ fn final_summary_reports_the_path_state_once() {
             &crate::install_env::RemovesNow,
         ))
         .expect("la instalación con `--no-modify-path` se completa");
-    let lines = summary_lines(&without_path.summary);
-    assert_eq!(
-        lines.len(),
-        1,
-        "con `--no-modify-path` también una sola línea: {:?}",
-        without_path.summary
-    );
     assert!(
-        lines[0].contains("no se modifica"),
-        "y aquí el texto del plan es el del estado, porque no hubo escritura: {}",
-        lines[0]
+        stages_since(before)
+            .iter()
+            .all(|(label, _)| *label != avi_term::stage::PATH_ADD.label),
+        "con `--no-modify-path` no hay etapa del `PATH`: no se toca nada"
     );
 }
 
@@ -514,6 +519,7 @@ fn final_summary_reports_the_path_state_once() {
 #[test]
 fn no_setup_provisions_nothing() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("no-setup");
     sandbox.seed_env();
 
@@ -533,6 +539,7 @@ fn no_setup_provisions_nothing() {
 
     let exe = sandbox.write_bundle(&sandbox.staging());
     let runtime = runtime::runtime();
+    let before = last_stage_id();
     let outcome = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -550,12 +557,10 @@ fn no_setup_provisions_nothing() {
     );
     assert_eq!(outcome.models.as_str(), "skipped");
     assert!(
-        outcome
-            .summary
+        stages_since(before)
             .iter()
-            .any(|l| l == "  Modelos: no se provisionaron (--no-setup)"),
-        "el resumen describe en español que no se provisionó: {:?}",
-        outcome.summary
+            .all(|(label, _)| *label != avi_term::stage::DOWNLOADING.label),
+        "con `--no-setup` no hay ninguna etapa de descarga"
     );
     assert_eq!(
         outcome.lifecycle_error(),
@@ -603,6 +608,7 @@ fn no_setup_provisions_nothing() {
 #[test]
 fn setup_failure_keeps_install() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("setup-failure");
     sandbox.seed_env();
     provision_selection(&sandbox);
@@ -726,30 +732,25 @@ fn setup_failure_keeps_install() {
     // `reason` de contrato, y por eso el cableado sale por `Done` y con código 0. La
     // prueba de al lado lo demuestra con la provisión entera, sin atajos.
 
-    // El resumen en texto dice lo mismo que el envelope.
+    // El texto lo escribe el binario con el mismo `lifecycle_error` que el envelope: la
+    // librería deja la etapa de descarga en `✗` y no emite el mensaje como aviso.
+    let download = avi_term::report::snapshot()
+        .stages
+        .into_iter()
+        .rev()
+        .find(|stage| stage.label == avi_term::stage::DOWNLOADING.label)
+        .expect("la descarga fallida deja su etapa en el registro");
+    assert_eq!(
+        download.outcome,
+        avi_term::report::StageOutcome::Failed,
+        "la etapa de descarga queda `✗`"
+    );
     assert!(
         outcome
-            .summary
+            .warnings
             .iter()
-            .any(|l| l.contains("Modelos:") && l.contains("falló la provisión")),
-        "el resumen final dice en español que la provisión falló: {:?}",
-        outcome.summary
-    );
-    assert!(
-        !outcome
-            .summary
-            .iter()
-            .any(|l| l.contains("Modelos:") && l.contains("failed")),
-        "el literal del contrato no aparece en el texto: {:?}",
-        outcome.summary
-    );
-    // El aviso de después lleva el consejo de reintentar y nombra la causa con su
-    // `reason` anidado.
-    assert!(
-        outcome.warnings.iter().any(|l| l
-            .contains("reintentarlo con `ai-voice-interconnector setup`")
-            && l.contains("network_error")),
-        "el aviso dice que puede reintentarse con `setup` y nombra la causa: {:?}",
+            .all(|l| !l.contains("no se completó")),
+        "el mensaje de `setup_failed` no es un aviso de la librería: {:?}",
         outcome.warnings
     );
 
@@ -775,6 +776,7 @@ fn setup_failure_keeps_install() {
 #[test]
 fn successful_provisioning_has_no_reason() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("setup-ok");
     sandbox.seed_env();
     provision_selection(&sandbox);
@@ -815,21 +817,18 @@ fn successful_provisioning_has_no_reason() {
     );
     assert!(
         !outcome
-            .summary
+            .warnings
             .iter()
-            .chain(outcome.warnings.iter())
             .any(|l| l.contains("no se completó")),
-        "y el resumen no dice nada de un fallo que no ha habido: {:?} {:?}",
-        outcome.summary,
+        "y no avisa de un fallo que no ha habido: {:?}",
         outcome.warnings
     );
     assert!(
-        outcome
-            .summary
+        avi_term::report::snapshot()
+            .stages
             .iter()
-            .any(|l| l == "  Modelos: ya estaban provisionados"),
-        "y el resumen describe en español que ya estaban provisionados: {:?}",
-        outcome.summary
+            .all(|stage| stage.label != avi_term::stage::DOWNLOADING.label),
+        "y no abre ninguna etapa de descarga: ya estaba todo provisionado"
     );
 }
 
@@ -852,6 +851,7 @@ fn successful_provisioning_has_no_reason() {
 #[test]
 fn uninstall_leaves_no_residue() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("uninstall-residue");
     sandbox.seed_env();
     let runtime = runtime::runtime();
@@ -1002,6 +1002,7 @@ fn uninstall_leaves_no_residue() {
 #[test]
 fn keep_data_preserves_state() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("keep-data");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -1412,6 +1413,7 @@ fn dry_run_does_not_touch_disk() {
 #[test]
 fn uninstall_is_idempotent() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     // ── Instalar, desinstalar, desinstalar ──────────────────────────────────────
@@ -2012,6 +2014,7 @@ fn shared_resources_survive() {
 #[test]
 fn uninstall_dry_run_needs_no_confirmation() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("dry-run-without-confirmation");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -2159,6 +2162,7 @@ fn uninstall_plan_lists_path_revert_apart_from_preserved() {
 #[test]
 fn uninstall_path_reverted_matches_the_real_run() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("revert-with-block");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -2295,6 +2299,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
 #[test]
 fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("program-rejected");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -2409,6 +2414,7 @@ fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
 #[test]
 fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("program-inside-root");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -2486,6 +2492,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
 #[test]
 fn uninstall_plan_does_not_preserve_a_missing_program_dir() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("program-missing");
     sandbox.seed_env();
     sandbox.seed_state();

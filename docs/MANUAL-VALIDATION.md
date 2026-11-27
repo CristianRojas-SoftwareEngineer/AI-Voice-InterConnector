@@ -540,6 +540,7 @@ provocarlo a mano.
 | **21** | `self update` contra un `SHA256SUMS.txt` manipulado (o el artefacto alterado en tránsito); el staging se borra sin tocar la instalación |
 | **22** | `self uninstall` con el directorio de programa tomado (un proceso vivo lo tiene abierto o faltan permisos): borra el estado de usuario y deja el directorio |
 | **23** | `cleanup` con una ruta tomada por otro proceso: borra el resto y deja esa ruta |
+| **24** | `self uninstall` con una ruta del estado tomada por otro proceso: completa el resto y deja esa ruta |
 | **130** | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
 
 ```bash

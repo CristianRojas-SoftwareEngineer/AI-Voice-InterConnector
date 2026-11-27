@@ -329,6 +329,48 @@ impl Sandbox {
         }
     }
 
+    /// Ejecuta el hijo con variables de entorno adicionales y devuelve su código de
+    /// salida, su stdout y su stderr tal cual, sin interpretar el JSON.
+    fn run_raw(&self, args: &[&str], extra_envs: &[(&str, &str)]) -> (i32, String, String) {
+        let mut out_capture = anonymous_capture();
+        let mut err_capture = anonymous_capture();
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(
+                out_capture
+                    .try_clone()
+                    .expect("duplicar la captura de stdout"),
+            )
+            .stderr(
+                err_capture
+                    .try_clone()
+                    .expect("duplicar la captura de stderr"),
+            );
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+        }
+        for (k, v) in &self.envs {
+            cmd.env(k, v);
+        }
+        for (k, v) in extra_envs {
+            cmd.env(k, v);
+        }
+        let status = cmd
+            .spawn()
+            .expect("el hijo debe arrancar")
+            .wait()
+            .expect("el hijo debe terminar");
+        let code = status.code().expect("el hijo debe terminar con un código");
+        (
+            code,
+            read_capture(&mut out_capture),
+            read_capture(&mut err_capture),
+        )
+    }
+
     /// Ejecuta el hijo y devuelve su código de salida y su envelope.
     ///
     /// El `stderr` del hijo se captura en un temporal hermano: si la salida no
@@ -554,6 +596,113 @@ fn self_install_no_setup_exits_0_without_reason() {
     assert!(
         temp_left.is_empty(),
         "sin temporal del bootstrap: {temp_left:?}"
+    );
+}
+
+/// Etapas y cierre de la salida de texto, sin lo que cambia entre sandboxes: de cada
+/// línea numerada o de cierre se descarta la nota (` · …`) y las palabras que empiezan
+/// por un dígito (duraciones y cifras).
+fn stage_lines_normalized(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with('[') || l.starts_with('✓') || l.starts_with("Instalación"))
+        .map(|line| {
+            let head = line.split(" · ").next().unwrap_or(line);
+            head.split_whitespace()
+                .filter(|word| !word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect()
+}
+
+/// `self install` en texto y con `--json` escribe el mismo stderr: cabecera (con la
+/// indicación de `--no-modify-path`), etapas numeradas del recorrido declarado (sin la
+/// etapa del `PATH`) y cierre `✓ … instalado`; y el envelope lleva el `context`.
+#[test]
+fn self_install_has_header_stages_and_same_stderr_with_and_without_json() {
+    let args = ["self", "install", "--yes", "--no-modify-path", "--no-setup"];
+    let text = Sandbox::new("stderr-text").run_raw(&args, &[]);
+    let json_args = [
+        "--json",
+        "self",
+        "install",
+        "--yes",
+        "--no-modify-path",
+        "--no-setup",
+    ];
+    let json = Sandbox::new("stderr-json").run_raw(&json_args, &[]);
+    assert_eq!((text.0, json.0), (0, 0), "{} / {}", text.2, json.2);
+
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        text.2.starts_with(&format!(
+            "Instalación de ai-voice-interconnector {version} · sin modificar el PATH"
+        )),
+        "{}",
+        text.2
+    );
+    assert!(text.2.contains("[1/"), "etapas numeradas: {}", text.2);
+    assert!(
+        !text.2.contains("Integración en el PATH"),
+        "con --no-modify-path no hay etapa del PATH: {}",
+        text.2
+    );
+    assert!(
+        text.2
+            .contains(&format!("✓ ai-voice-interconnector {version} instalado en")),
+        "{}",
+        text.2
+    );
+    assert_eq!(
+        stage_lines_normalized(&text.2),
+        stage_lines_normalized(&json.2),
+        "--json no cambia stderr"
+    );
+
+    let envelope: Value = serde_json::from_str(json.1.trim()).expect("stdout JSON");
+    assert_eq!(envelope["context"]["mode"], "install", "{envelope}");
+    assert_eq!(envelope["context"]["modify_path"], false, "{envelope}");
+    assert_eq!(envelope["context"]["version"], version, "{envelope}");
+}
+
+/// Con `AVI_HANDOVER_PARENT_PID` (el hijo del traspaso de `self update`) no hay cabecera,
+/// ni numeración, ni cierre `✓ … instalado`; las líneas de etapa salen sangradas con 8
+/// espacios; y con la provisión fallida (`setup_failed`) el hijo no escribe `Error:`,
+/// porque el padre lee `models_cause` y lo escribe él.
+#[test]
+fn self_install_handover_child_is_nested_and_does_not_write_the_error() {
+    let sandbox = Sandbox::new("handover");
+    let pid = std::process::id().to_string();
+    let (code, _stdout, stderr) = sandbox.run_raw(
+        &["self", "install", "--yes", "--no-modify-path"],
+        &[("AVI_HANDOVER_PARENT_PID", pid.as_str())],
+    );
+    assert_eq!(code, 11, "setup_failed sale con 11: {stderr}");
+    assert!(
+        !stderr.contains("Instalación de ai-voice-interconnector"),
+        "sin cabecera: {stderr}"
+    );
+    assert!(!stderr.contains("[1/"), "sin numeración: {stderr}");
+    assert!(
+        !stderr.contains("instalado en"),
+        "sin cierre `✓ … instalado`: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Error:"),
+        "sin `Error:` del hijo: {stderr}"
+    );
+    let stage_lines: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.trim_start().starts_with('✓') || l.trim_start().starts_with('✗'))
+        .collect();
+    assert!(
+        !stage_lines.is_empty(),
+        "el hijo pinta sus etapas: {stderr}"
+    );
+    assert!(
+        stage_lines.iter().all(|l| l.starts_with("        ")),
+        "las líneas de etapa llevan 8 espacios: {stage_lines:?}"
     );
 }
 

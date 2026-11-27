@@ -231,6 +231,9 @@ pub struct Options {
     /// `--force`: resuelve un `path_conflict` del enlace simbólico. No es el
     /// `--force` de `uninstall`.
     pub force: bool,
+    /// Lo lanzó el traspaso de `self update`: no declara recorrido ni escribe cierre, y
+    /// sus etapas salen sin numerar y anidadas dentro de la etapa del proceso padre.
+    pub handover: bool,
 }
 
 impl Options {
@@ -318,13 +321,7 @@ pub struct Outcome {
     /// versión y canal: reaplicar el recibo es uno de los pasos de la
     /// instalación.
     pub receipt: InstallReceipt,
-    /// Resumen final. La primera línea es el cierre (`<programa> <versión>
-    /// instalado en <total>`, sin la marca de éxito, que añade quien la escribe)
-    /// y las siguientes son detalles: el estado del `PATH`, si hay algo que
-    /// decir, y el de los modelos. Vacío si el usuario canceló.
-    pub summary: Vec<String>,
-    /// Avisos de después de la operación, uno por línea y sin el prefijo
-    /// `Aviso:`, que añade quien los escribe.
+    /// Textos de los avisos que el propio flujo emitió, en el orden en que salieron.
     pub warnings: Vec<String>,
     /// Resumen previo, paso 4, el que se mostró **antes** de confirmar. Se
     /// conserva porque es el que anuncia los cambios y con el que el binario compone
@@ -414,10 +411,9 @@ impl Outcome {
                     cache_dir: env.cache_dir.clone(),
                 },
             ),
-            // `confirm::confirm` ya escribió «Cancelado.» por stderr.
-            summary: Vec::new(),
+            // El cierre de la cancelación ya lo escribió `install`.
             warnings: Vec::new(),
-            summary_before: vec!["Cancelado.".to_string()],
+            summary_before: Vec::new(),
             path_integration: PathIntegration::none(),
             path_rewritten: false,
             models: ModelsState::Skipped,
@@ -600,9 +596,11 @@ pub async fn install(
 ) -> anyhow::Result<Outcome> {
     // Ninguna operación pide elevación: en Unix `sudo` aborta aquí, antes
     // de tocar el disco, y en Windows se avisa por stderr.
+    // Textos de los avisos que el propio flujo emite, en el orden en que salen.
+    let mut warnings: Vec<String> = Vec::new();
     let report = privileges::ensure_per_user()?;
     if let Some(warning) = report.warning {
-        avi_term::line::warn(warning);
+        warn_recorded(&mut warnings, warning);
     }
 
     // ── Paso 1. Recuperación y bloqueo ────────────────────────────────────────
@@ -664,8 +662,72 @@ pub async fn install(
         Mode::Install => "¿Instalar el programa?",
         Mode::Repair => "¿Reparar la instalación?",
     };
+    // Avisos previos, antes de la pregunta: salen como `Aviso:` porque aún no hay
+    // ninguna etapa a la que ligarlos.
+    if let Some(root) = &foreign_in_path {
+        warn_recorded(
+            &mut warnings,
+            format!(
+                "Hay otra instalación de {} en {}; en el PATH tiene precedencia la primera que \
+                 aparezca.",
+                crate::APP_NAME,
+                root.display()
+            ),
+        );
+    }
+    if !recovery.kept.is_empty() {
+        warn_recorded(
+            &mut warnings,
+            format!(
+                "No se pudo limpiar {} de una operación anterior; `ai-voice-interconnector \
+                 doctor` informa de ello.",
+                avi_term::fmt::count(recovery.kept.len() as u64, "recurso", "recursos")
+            ),
+        );
+    }
+
+    // Recorrido de una fase con N fijo. Se mira el daemon antes de declarar. Con
+    // `handover` no se declara nada: las etapas del hijo salen sin numerar y
+    // anidadas dentro de la etapa del proceso padre.
+    let daemon_active = daemon_stop::is_active(&env.data_dir, &env.daemon_addr, control).await;
+    let mut stages: Vec<&'static stage::Stage> = Vec::new();
+    if daemon_active {
+        stages.push(&stage::STOPPING);
+    }
+    if mode == Mode::Install {
+        stages.push(if replaces.is_some() {
+            &stage::REPLACING
+        } else {
+            &stage::COPYING
+        });
+    }
+    if !options.no_modify_path {
+        stages.push(&stage::PATH_ADD);
+    }
+    stages.push(&stage::RECEIPT);
+    if !options.no_setup {
+        stages.extend(std::iter::repeat_n(
+            &stage::DOWNLOADING,
+            pending.models.len(),
+        ));
+    }
+    let stage_count = stages.len();
+    if options.handover {
+        avi_term::line::set_nested(true);
+    } else {
+        avi_term::report::declare(avi_term::report::Pipeline::new(vec![
+            avi_term::report::PhaseSpec {
+                id: "install",
+                title: "Instalación",
+                short: "Instalación",
+                stages,
+            },
+        ]));
+    }
+
     let decision = confirm(question, &previous_summary, &entries, kind, options)?;
     if decision == confirm::Decision::Cancelled {
+        avi_term::line::special_closing(kind.cancelled_closing());
         return Ok(Outcome::cancelled(env, mode));
     }
 
@@ -678,26 +740,35 @@ pub async fn install(
     // consumiría en una rama que puede no ejecutarse, y dejaría al resto del
     // flujo sin poder usarlo. El patrón es el del plan: el trabajo que puede
     // fallar en un bloque, y el cierre fuera, sobre el resultado ya obtenido.
-    let progress = PhaseProgress::new();
+    let progress = if stage_count == 1 && !options.handover {
+        PhaseProgress::new().single_stage()
+    } else {
+        PhaseProgress::new()
+    };
     let work: anyhow::Result<_> = async {
-        progress.phase(&stage::STOPPING);
-
         // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────
-        // La línea se cede antes de la parada: el motor emite avisos internos
-        // que no pueden quedar pegados a la fase.
-        progress.yield_line();
+        // La etapa solo existe si había un daemon activo; la parada se hace igual.
+        if daemon_active {
+            progress.phase(&stage::STOPPING);
+        }
         let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
         daemon_stop::require_stopped(&daemon)?;
-        // La etapa solo deja línea terminada si había un daemon que detener.
-        if daemon.was_running {
-            progress.done_as("Daemon detenido");
+        if daemon_active {
+            progress.end_stage();
         }
-        progress.reclaim();
+        if daemon.was_running {
+            warn_recorded(
+                &mut warnings,
+                "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
+                 `ai-voice-interconnector daemon start`",
+            );
+        }
 
         // ── Paso 6. Reemplazo transaccional ───────────────────────────────────
         // En reparación **no se copia nada**: se reaplican integración, permisos,
         // cuarentena y recibo sobre lo que ya está.
         let mut parked = None;
+        let mut parked_warning = None;
         if mode == Mode::Install {
             // Una instalación nueva copia el programa; sobre una existente lo
             // reemplaza.
@@ -716,34 +787,56 @@ pub async fn install(
             // carpeta entera.
             if let Some(dir) = outcome.pending_parked {
                 let retirement = retire(&dir, remover, &env.parked_holder);
-                if let Some(message) = parked_message(&dir, retirement) {
-                    progress.yield_line();
-                    avi_term::line::warn(message);
-                }
+                parked_warning = parked_message(&dir, retirement);
                 parked = Some(retirement);
+            }
+            progress.note(&match &replaces {
+                Some(version) => format!("{} · reemplaza {version}", env.program_dir.display()),
+                None => env.program_dir.display().to_string(),
+            });
+            progress.end_stage();
+            // El aviso del aparcado va debajo de su etapa, ya cerrada.
+            if let Some(message) = parked_warning {
+                warn_recorded(&mut warnings, message);
             }
         }
 
         // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────
         // No es un fallo de la instalación: la cuarentena que no se quita degrada el
-        // arranque, y el resumen lo informa. Es rápida y no fatal, así que no abre
+        // arranque, y el aviso lo informa. Es rápida y no fatal, así que no abre
         // fase propia.
         let quarantine = quarantine::strip(&env.program_dir);
-        if !quarantine.failed.is_empty() {
-            progress.yield_line();
-        }
         for (path, reason) in &quarantine.failed {
-            avi_term::line::warn(format!(
-                "No se pudo limpiar la cuarentena de {}: {reason}",
-                path.display()
-            ));
+            warn_recorded(
+                &mut warnings,
+                format!(
+                    "No se pudo limpiar la cuarentena de {}: {reason}",
+                    path.display()
+                ),
+            );
         }
 
         // ── Paso 8. Integración del PATH ───────────────────────────────────────
+        // Con `--no-modify-path` no hay etapa: `apply_path` no toca nada.
         crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
-        progress.phase(&stage::PATH_ADD);
+        if !options.no_modify_path {
+            progress.phase(&stage::PATH_ADD);
+        }
         let program_exe = env.program_dir.join(&executable);
         let (path_integration, path_rewritten) = apply_path(env, options, &program_exe)?;
+        if !options.no_modify_path {
+            // Sin nota si la integración ya estaba: no se tocó nada.
+            if path_rewritten {
+                progress.note(&format!("se añadió {}", env.bin_dir.display()));
+            }
+            progress.end_stage();
+            if path_rewritten {
+                warn_recorded(
+                    &mut warnings,
+                    "Las terminales que ya estaban abiertas no verán el PATH hasta reiniciarse.",
+                );
+            }
+        }
 
         // ── Paso 9. Recibo atómico ─────────────────────────────────────────────
         crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
@@ -761,18 +854,11 @@ pub async fn install(
             },
         );
         receipt::write_to(&receipt, &env.program_dir)?;
-        Ok((
-            daemon,
-            parked,
-            quarantine,
-            path_integration,
-            path_rewritten,
-            receipt,
-        ))
+        progress.end_stage();
+        Ok((daemon, parked, path_integration, path_rewritten, receipt))
     }
     .await;
-    // El cierre no imprime estado: el mensaje final lo compone el propio flujo.
-    let (daemon, parked, quarantine, path_integration, path_rewritten, receipt) = match work {
+    let (daemon, parked, path_integration, path_rewritten, receipt) = match work {
         Ok(done) => done,
         Err(e) => {
             progress.fail();
@@ -790,32 +876,21 @@ pub async fn install(
         provision(&setup::HubProvisioner, &progress).await
     };
     drop(lock);
-    let elapsed = progress.close();
 
-    // ── Paso 11. Resumen final ────────────────────────────────────────────────
-    // El mensaje final lo compone el propio flujo de la librería —aquí no hay
-    // handler que pueda hacerlo— y lleva la duración que devolvió el cierre
-    // del indicador, que es el mismo reloj que mostró las fases y que ya incluye
-    // la descarga de modelos.
-    let (summary, warnings) = final_summary(
-        env,
-        mode,
-        &path_integration,
-        path_rewritten,
-        &previous_summary,
-        &models,
-        &daemon,
-        foreign_in_path.as_ref(),
-        &recovery.kept,
-        !quarantine.failed.is_empty(),
-        elapsed,
-    );
+    // ── Paso 11. Cierre ───────────────────────────────────────────────────────
+    // Con la provisión fallida, la etapa de descarga ya quedó `✗` y el cierre lo
+    // escribe quien convierte el desenlace en error (`setup_failed`). Con
+    // `handover`, el cierre es del proceso padre.
+    if matches!(models, ModelsState::Failed { .. }) || options.handover {
+        progress.close();
+    } else {
+        progress.finish(&closing_action(env, mode), &[]);
+    }
 
     Ok(Outcome {
         status: mode.as_str(),
         mode,
         receipt,
-        summary,
         warnings,
         summary_before: previous_summary,
         path_integration,
@@ -865,7 +940,7 @@ fn confirm(
 ) -> anyhow::Result<confirm::Decision> {
     let stdin = std::io::stdin();
     let mut entry = stdin.lock();
-    confirm::confirm(
+    confirm::ask(
         &confirm::Confirmation {
             kind,
             question,
@@ -1143,105 +1218,25 @@ fn compose_summary(
     out
 }
 
-/// Resumen final: versión, rutas, estado del `PATH` —con el aviso de que las
-/// terminales ya abiertas no lo ven cuando se acaba de añadir— y estado de los
-/// modelos.
-// Cada parámetro es un hecho distinto observado en un paso anterior y una línea del
-// resumen depende de él; agruparlos en una estructura de un solo uso solo movería los
-// mismos campos de sitio.
-#[allow(clippy::too_many_arguments)]
-fn final_summary(
-    env: &Env,
-    mode: Mode,
-    integration: &PathIntegration,
-    path_rewritten: bool,
-    previous: &[String],
-    models: &ModelsState,
-    daemon: &StopOutcome,
-    foreign: Option<&PathBuf>,
-    recovery_kept: &[PathBuf],
-    incomplete_quarantine: bool,
-    elapsed: std::time::Duration,
-) -> (Vec<String>, Vec<String>) {
-    let mut out = vec![format!(
-        "{} {} {} en {}",
+/// Acción del cierre de `self install`: `<programa> <versión> instalado` o
+/// `<programa> <versión> reparado`. La duración la añade el cierre del indicador.
+pub fn closing_action(env: &Env, mode: Mode) -> String {
+    format!(
+        "{} {} {}",
         crate::APP_NAME,
         env.version,
         match mode {
             Mode::Install => "instalado",
             Mode::Repair => "reparado",
-        },
-        avi_term::fmt::duration(elapsed)
-    )];
-    let mut warnings: Vec<String> = Vec::new();
-    // El resumen final lleva a lo sumo **una** línea del `PATH`, y es la del **estado**, no
-    // la del plan. Copiar aquí la línea del resumen previo —que dice lo que se va a
-    // hacer— y añadir debajo la del estado imprimiría las dos, y en una instalación
-    // correcta el usuario leería "se añadirá X" y "se añadió X" en el mismo bloque, que
-    // parece una contradicción y no es más que el mismo hecho contado dos veces.
-    //
-    // El estado tiene tres casos: "se añadió" solo cuando esta pasada **reescribió** el
-    // `PATH`, porque si ya estaba decirlo sería mentir sobre lo que acaba de pasar; nada
-    // cuando la integración está en pie y esta pasada no la tocó, porque el plan ya dijo
-    // que no se modificaba y repetirlo no informa; y el texto del plan cuando no se va a
-    // integrar nada (`--no-modify-path`), donde el plan *es* el estado porque no hubo
-    // escritura.
-    //
-    // "Se añadió" avisa aparte de que solo las terminales que ya estaban abiertas no lo
-    // ven: no pide abrir otra, porque la ventana del bootstrap sí lo ve (el bootstrap de
-    // Windows actualiza su propio `PATH`) y las que se abran después también.
-    if path_rewritten {
-        out.push(format!("  PATH: se añadió {}", env.bin_dir.display()));
-        warnings.push(
-            "Las terminales que ya estaban abiertas no verán el PATH hasta reiniciarse."
-                .to_string(),
-        );
-    } else if !integration.modify_path {
-        if let Some(line) = previous
-            .iter()
-            .find(|l| l.trim_start().starts_with("PATH:"))
-        {
-            out.push(format!(
-                "  PATH: {}",
-                line.trim_start().trim_start_matches("PATH:").trim()
-            ));
         }
-    }
-    out.push(format!("  Modelos: {}", models.describe()));
-    if let ModelsState::Failed { cause } = models {
-        // La misma frase que `Outcome::lifecycle_error` pone en el `reason` del envelope; ya
-        // lleva la causa, así que el usuario ve qué falló y no solo que algo falló.
-        warnings.push(setup_failed_message(&env.program_dir, cause));
-    }
-    if let Some(root) = foreign {
-        warnings.push(format!(
-            "Hay otra instalación de {} en {}; en el PATH tiene precedencia la primera que \
-             aparezca.",
-            crate::APP_NAME,
-            root.display()
-        ));
-    }
-    if !recovery_kept.is_empty() {
-        warnings.push(format!(
-            "No se pudo limpiar {} de una operación anterior; `ai-voice-interconnector \
-             doctor` informa de ello.",
-            avi_term::fmt::count(recovery_kept.len() as u64, "recurso", "recursos")
-        ));
-    }
-    if incomplete_quarantine {
-        warnings.push(
-            "La cuarentena de macOS no se pudo limpiar de todo el directorio de programa."
-                .to_string(),
-        );
-    }
-    if daemon.was_running {
-        warnings.push(
-            "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
-             `ai-voice-interconnector daemon start`."
-                .to_string(),
-        );
-    }
-    (out, warnings)
+    )
+}
+
+/// Emite un aviso `⚠` y guarda su texto en `warnings`, en el orden en que sale.
+fn warn_recorded(warnings: &mut Vec<String>, text: impl Into<String>) {
+    let text = text.into();
+    avi_term::line::warn(&text);
+    warnings.push(text);
 }
 
 #[cfg(test)]

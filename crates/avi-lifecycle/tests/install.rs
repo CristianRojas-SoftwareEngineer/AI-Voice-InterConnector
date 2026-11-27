@@ -153,25 +153,12 @@ async fn install_twice_is_idempotent() {
         second.path_integrated(),
         "pero sigue registrada en el recibo, que es lo que permite revertirla"
     );
-    // El resumen **final** no es idéntico entre las dos pasadas, y no debería: la
-    // segunda no reescribe el `PATH` y decirlo sería mentir. Lo que tiene que ser
-    // igual es el estado, que es lo que la idempotencia afirma.
-    //
-    // La duración que acompaña al resumen tampoco es estado: es el tiempo que
-    // tardó cada pasada, y las dos no tardan lo mismo. Se quitan las duraciones
-    // del final de la línea para que la aserción afirme lo que afirma —el
-    // estado— y no el reloj de dos ejecuciones.
-    let state_lines = |summary: &[String]| -> Vec<String> {
-        summary
-            .iter()
-            .filter(|l| !l.trim_start().starts_with("PATH:"))
-            .map(|l| without_trailing_duration(l))
-            .collect()
-    };
+    // Los avisos de las dos pasadas no son idénticos, y no deberían: la segunda no
+    // reescribe el `PATH` y avisar a las terminales abiertas sería mentir. Lo que tiene
+    // que ser igual es el estado, que es lo que la idempotencia afirma.
     assert_eq!(
-        state_lines(&second.summary),
-        state_lines(&first.summary),
-        "el estado final es el mismo"
+        second.models, first.models,
+        "el estado de los modelos es el mismo"
     );
     assert!(
         first.path_changed() && !second.path_changed(),
@@ -246,36 +233,6 @@ async fn install_sets_bundled_ffmpeg_executable() {
         .mode()
         & 0o777;
     assert_eq!(mode, 0o755, "FFmpeg instalado debe ser ejecutable");
-}
-
-/// Quita del final de una línea la duración que el resumen añade.
-///
-/// El resumen de una instalación termina con el tiempo que tardó, tras « en »:
-/// «ai-voice-interconnector 0.34.0 instalado en 1,0 s». Ese tiempo es el reloj de
-/// una ejecución, no el estado que deja, y dos ejecuciones del mismo estado no
-/// tardan lo mismo. La línea sin esa cola es la que afirma el estado.
-///
-/// El helper va anclado al formato de la duración, no a «cualquier texto tras
-/// ` en `»: una línea del resumen que contuviera ` en ` por otro motivo no debe
-/// mutilarse en silencio.
-fn without_trailing_duration(line: &str) -> String {
-    let trimmed = line.trim_end();
-    // La duración se escribe «7,0 s», «1 min 59 s» o «1 h 02 min».
-    let Some(pos) = trimmed.rfind(" en ") else {
-        return line.to_string();
-    };
-    let duration = &trimmed[pos + 4..];
-    let looks_like_duration = duration.ends_with(" s")
-        || duration.ends_with(" min")
-        || duration.ends_with(" h")
-        || duration
-            .split_once(" min ")
-            .is_some_and(|(_, rest)| rest.ends_with(" s"));
-    if looks_like_duration {
-        trimmed[..pos].to_string()
-    } else {
-        line.to_string()
-    }
 }
 
 /// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
@@ -383,10 +340,10 @@ async fn repair_from_inside_program_dir_copies_nothing() {
             "el bloque se reaplicó una sola vez"
         );
     }
-    assert!(
-        repair.summary.iter().any(|l| l.contains("reparado")),
-        "el resumen final dice que fue una reparación: {:?}",
-        repair.summary
+    assert_eq!(
+        install::closing_action(&env, repair.mode),
+        format!("{} 0.24.0 reparado", avi_lifecycle::APP_NAME),
+        "el cierre dice que fue una reparación"
     );
     assert!(
         repair

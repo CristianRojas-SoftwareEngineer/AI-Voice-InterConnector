@@ -505,6 +505,7 @@ fn orphan_scratch_of_a_dead_owner_is_swept() {
 /// con éxito.
 #[test]
 fn uninstall_leaves_no_residue_in_exclusive_roots() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("uninstall");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -600,6 +601,7 @@ fn uninstall_with_program_in(tag: &str, container: impl Fn(&Sandbox) -> PathBuf)
 /// una vez retirados el programa y sus archivos de bloqueo.
 #[test]
 fn uninstall_prunes_app_container_holding_the_program() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = uninstall_with_program_in("program-in-app", |s| s.app_dir.clone());
     assert!(!exists(&sandbox.program_dir));
     assert!(
@@ -611,6 +613,7 @@ fn uninstall_prunes_app_container_holding_the_program() {
 /// Igual con el programa dentro del contenedor de caché: se podan él y su ancestro.
 #[test]
 fn uninstall_prunes_cache_container_holding_the_program() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = uninstall_with_program_in("program-in-cache", |s| s.cache_dir.clone());
     assert!(
         !exists(&sandbox.cache_dir),
@@ -623,6 +626,7 @@ fn uninstall_prunes_cache_container_holding_the_program() {
 /// recursiva sobre lo que no es de la aplicación.
 #[test]
 fn uninstall_keeps_container_with_foreign_entry_beside_the_program() {
+    let _registry = avi_term::report::test_guard();
     let mut sandbox = Sandbox::new("program-foreign");
     sandbox.program_dir = sandbox.app_dir.join("bin");
     let receipt = sandbox.install_registered(PathIntegration::none());
@@ -648,6 +652,7 @@ fn uninstall_keeps_container_with_foreign_entry_beside_the_program() {
 /// queda solo con el programa, y no el programa: así el contenedor no es residuo.
 #[test]
 fn deferred_removal_targets_the_outermost_container_left_with_the_program() {
+    let _registry = avi_term::report::test_guard();
     let mut sandbox = Sandbox::new("program-deferred");
     sandbox.program_dir = sandbox.cache_dir.join("bin");
     let receipt = sandbox.install_registered(PathIntegration::none());
@@ -721,6 +726,7 @@ fn destructive_operations_refuse_while_a_usage_command_runs() {
 /// `--keep-data` conserva modelos, voces y habla.
 #[test]
 fn uninstall_keep_data_preserves_models_voices_and_speech() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("keep-data");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -767,6 +773,7 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
 /// Repetido sobre un sistema limpio termina con éxito y `not_installed`.
 #[test]
 fn uninstall_is_idempotent() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("idempotent");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -810,6 +817,7 @@ fn uninstall_is_idempotent() {
 /// El canal `homebrew` es `externally_managed` con el comando correcto, y nada se toca.
 #[test]
 fn uninstall_homebrew_is_externally_managed() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("homebrew");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -907,6 +915,7 @@ fn uninstall_refuses_unsafe_program_dir() {
 /// programa y el desenlace es `removal_scheduled`, que es un éxito.
 #[test]
 fn uninstall_schedules_removal_when_the_executable_is_inside() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("deferred");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -945,6 +954,7 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
 /// desinstalación se completó y el directorio queda intacto, sin borrado parcial.
 #[test]
 fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("unschedulable");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -995,6 +1005,7 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
 /// con la causa en el mensaje y sin borrado parcial.
 #[test]
 fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
+    let _registry = avi_term::report::test_guard();
     struct Undeterminable;
     impl avi_lifecycle::removal::PathRemover for Undeterminable {
         fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
@@ -1048,6 +1059,7 @@ fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
 /// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco.
 #[test]
 fn uninstall_dry_run_touches_nothing() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("uninstall-dry");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -1085,6 +1097,7 @@ fn uninstall_dry_run_touches_nothing() {
 #[cfg(unix)]
 #[test]
 fn uninstall_reverts_path_from_the_receipt() {
+    let _registry = avi_term::report::test_guard();
     use avi_lifecycle::receipt::{self, InstallReceipt};
     use std::os::unix::fs::symlink;
 
@@ -1217,6 +1230,7 @@ fn assert_preserved_unique(preserved: &[cleanup::Preserved]) {
 /// Tras `self uninstall` desaparecen los contenedores raíz y de caché, con su scratch.
 #[test]
 fn uninstall_removes_every_container() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("containers-uninstall");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -1358,6 +1372,7 @@ fn cleanup_all_without_receipt_leaves_zero_state() {
 /// jamás se borra; el contenedor padre no se informa porque lo retiene un nodo.
 #[test]
 fn foreign_file_keeps_its_container_and_is_reported() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("containers-foreign");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -1457,6 +1472,7 @@ fn shared_hf_root_is_never_pruned() {
 /// informa, y ningún aviso se repite.
 #[test]
 fn keep_data_leaves_containers_in_place_silently() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("containers-keep-data");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();

@@ -252,20 +252,34 @@ pub struct Outcome {
     pub dry_run: bool,
     pub daemon_was_running: bool,
     pub failed: Vec<String>,
+    /// Plan legible de la simulación, una línea por elemento, para que el binario
+    /// lo escriba por stdout. Vacío fuera de la simulación.
+    pub plan_lines: Vec<String>,
 }
 
 impl Outcome {
-    /// `reason` de contrato y código de salida cuando el paso 8 no pudo borrar ni programar
-    /// el directorio de programa, y `None` en cualquier otro desenlace.
+    /// `reason` de contrato y código de salida del éxito parcial, y `None` en cualquier
+    /// otro desenlace.
     ///
-    /// Es éxito parcial con código propio: el resto de la desinstalación se completó y lo
-    /// único que falta es ese directorio. La exclusión por la regla del directorio de
-    /// programa no es un fallo sino preservación deliberada, así que no llega aquí. Quien cablea emite el envelope con este
-    /// `reason` y sale por veredicto con su código, como hace `self install`.
+    /// Es éxito parcial con código propio: el resto de la desinstalación se completó y
+    /// quedaron rutas sin borrar. Si entre ellas está el directorio de programa (el paso 8
+    /// no pudo borrarlo ni programar su borrado) el `reason` es `program_dir_kept`, que
+    /// tiene prioridad; si no, es `uninstall_incomplete`. La exclusión por la regla del
+    /// directorio de programa no es un fallo sino preservación deliberada, así que no
+    /// llega aquí. Quien cablea emite el envelope con este `reason` y sale por veredicto
+    /// con su código, como hace `self install`.
     pub fn lifecycle_error(&self) -> Option<LifecycleError> {
-        self.program_dir_kept.as_ref().map(|detail| {
-            LifecycleError::program_dir_kept(format!(
-                "el resto de la desinstalación se completó, pero no se pudo borrar ni programar \n                 el borrado del directorio de programa ({detail}); bórralo a mano cuando ningún \n                 proceso lo use"
+        if let Some(detail) = &self.program_dir_kept {
+            return Some(LifecycleError::program_dir_kept(format!(
+                "el resto de la desinstalación se completó, pero no se pudo borrar ni programar \
+                 el borrado del directorio de programa ({detail}); bórralo a mano cuando ningún \
+                 proceso lo use"
+            )));
+        }
+        (!self.failed.is_empty()).then(|| {
+            LifecycleError::uninstall_incomplete(format!(
+                "No se pudo borrar {}.",
+                avi_term::fmt::count(self.failed.len() as u64, "ruta", "rutas")
             ))
         })
     }
@@ -335,10 +349,34 @@ pub async fn run(
         .map(|e| e.path.display().to_string())
         .collect();
 
-    // ── Paso 4. Confirmación destructiva ─────────────────────────────────────────
+    // ── Recorrido ─────────────────────────────────────────────────────────────────
+    // Una sola fase: la parada del daemon solo si había uno activo, y los cuatro
+    // pasos de borrado. Se mira el daemon antes de declarar para que N quede fijo.
+    let daemon_active = daemon_stop::is_active(&roots.data_dir, &env.daemon_addr, control).await;
+    let mut stages = Vec::new();
+    if daemon_active {
+        stages.push(&stage::STOPPING);
+    }
+    stages.extend([
+        &stage::STATE,
+        &stage::PATH_REVERT,
+        &stage::PROGRAM,
+        &stage::LOCKS,
+    ]);
+    avi_term::report::declare(avi_term::report::Pipeline::new(vec![
+        avi_term::report::PhaseSpec {
+            id: "uninstall",
+            title: "Desinstalación",
+            short: "Desinstalación",
+            stages,
+        },
+    ]));
+
+    // ── Paso 4. Confirmación destructiva, fuera del reloj del comando ────────────
     let summary = plan_lines(&plan, options, None);
     let decision = confirm(&summary, options)?;
     if decision == Decision::Cancelled {
+        avi_term::line::special_closing(Kind::Destructive.cancelled_closing());
         return Ok(Outcome {
             status: "cancelled",
             planned,
@@ -355,19 +393,22 @@ pub async fn run(
     // consumiría en una rama que puede no ejecutarse.
     let progress = PhaseProgress::new();
     let work: anyhow::Result<_> = async {
-        progress.phase(&stage::STOPPING);
-
         // ── Paso 5. Parar el daemon; si falla, `daemon_stop_failed` sin borrar nada ──
-        // La línea se cede antes de la parada: el motor emite avisos internos
-        // que no pueden quedar pegados a la fase.
-        progress.yield_line();
+        // La etapa solo existe si había un daemon activo; la parada se hace igual.
+        if daemon_active {
+            progress.phase(&stage::STOPPING);
+        }
         let daemon = daemon_stop::stop(&roots.data_dir, &env.daemon_addr, control).await;
         daemon_stop::require_stopped(&daemon)?;
-        // La etapa solo deja línea terminada si había un daemon que detener.
-        if daemon.was_running {
-            progress.done_as("Daemon detenido");
+        if daemon_active {
+            progress.end_stage();
         }
-        progress.reclaim();
+        if daemon.was_running {
+            avi_term::line::warn(
+                "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
+                 `ai-voice-interconnector daemon start`",
+            );
+        }
 
         let mut removed = Vec::new();
         let mut failed = Vec::new();
@@ -377,11 +418,18 @@ pub async fn run(
         let report = ownership::execute(&roots.ownership_tree(), &plan.state.ownership);
         removed.extend(report.removed.iter().map(|p| p.display().to_string()));
         removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
-        for (path, e) in &report.failed {
-            progress.yield_line();
-            avi_term::line::warn(format!("No se pudo borrar {}: {e}", path.display()));
-            failed.push(path.display().to_string());
-        }
+        let step_failures: Vec<String> = report
+            .failed
+            .iter()
+            .map(|(path, e)| format!("No se pudo borrar {}: {e}", path.display()))
+            .collect();
+        failed.extend(
+            report
+                .failed
+                .iter()
+                .map(|(path, _)| path.display().to_string()),
+        );
+        close_step(&progress, &step_failures);
 
         // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────
         // El valor que se publica sale del mismo predicado que usa el simulacro, y se
@@ -390,11 +438,13 @@ pub async fn run(
         progress.phase(&stage::PATH_REVERT);
         let path_pending = path_would_be_reverted(receipt, &env.home);
         let revert_report = revert_path(receipt, &env.home);
-        for failure in &revert_report.failures {
-            progress.yield_line();
-            avi_term::line::warn(format!("No se pudo revertir el PATH: {failure}"));
-            failed.push(failure.clone());
-        }
+        let step_failures: Vec<String> = revert_report
+            .failures
+            .iter()
+            .map(|failure| format!("No se pudo revertir el PATH: {failure}"))
+            .collect();
+        failed.extend(revert_report.failures.iter().cloned());
+        close_step(&progress, &step_failures);
         let path_reverted = revert_report.touched && path_pending;
 
         // ── Paso 8. Borrar el directorio de programa según la regla de borrado ───
@@ -413,6 +463,8 @@ pub async fn run(
             ownership::Plan::default()
         };
         let mut program_dir_kept = None;
+        let mut step_failures = Vec::new();
+        let mut scheduled_warning = None;
         let (program_dir_removed, status) = if plan.program_dir.is_some() {
             // El borrado del programa puede tardar: el contador avanza mientras
             // dura.
@@ -422,16 +474,11 @@ pub async fn run(
                     (true, "uninstalled")
                 }
                 Ok(Removal::Scheduled { target, scheduling }) => {
-                    progress.yield_line();
-                    avi_term::line::warn(scheduled_program_message(&target, scheduling));
+                    scheduled_warning = Some(scheduled_program_message(&target, scheduling));
                     (false, "removal_scheduled")
                 }
                 Err(e) => {
-                    progress.yield_line();
-                    avi_term::line::warn(format!(
-                        "No se pudo borrar {}: {e}",
-                        program_dir.display()
-                    ));
+                    step_failures.push(format!("No se pudo borrar {}: {e}", program_dir.display()));
                     failed.push(program_dir.display().to_string());
                     program_dir_kept = Some(format!("{}: {e}", program_dir.display()));
                     (false, "uninstalled")
@@ -443,6 +490,11 @@ pub async fn run(
             // ya está en `removed` si lo consiguió.
             (false, "uninstalled")
         };
+        close_step(&progress, &step_failures);
+        // El aviso del borrado diferido va debajo de la etapa ya cerrada.
+        if let Some(message) = scheduled_warning {
+            avi_term::line::warn(message);
+        }
 
         // ── Paso 9. Borrar el archivo de bloqueo y la compuerta ───────────────────
         // Viven en el hermano del directorio de programa, así que se borran también cuando
@@ -456,24 +508,25 @@ pub async fn run(
         // consecuencias (su dueño bloquea el fichero que está en la ruta). Un fallo se
         // informa como cualquier otro resto que no se pudo borrar.
         progress.phase(&stage::LOCKS);
+        let mut step_failures = Vec::new();
         for (path, error) in lock.remove_files() {
-            progress.yield_line();
-            avi_term::line::warn(format!("No se pudo borrar {}: {error}", path.display()));
+            step_failures.push(format!("No se pudo borrar {}: {error}", path.display()));
             failed.push(path.display().to_string());
         }
 
         // Con el programa ya retirado y sin archivos de bloqueo, se podan los contenedores
         // que solo los retenían. En el borrado diferido el programa sigue en disco y los
-        // poda el limpiador, que recibió el contenedor más externo como destino.
+        // poda el limpiador, que recibió el contenedor más externo como destino. Sus
+        // fallos cuentan para esta etapa, que es la que está abierta.
         if program_dir_removed {
             let report = ownership::execute(&tree, &tail);
             removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
             for (path, e) in &report.failed {
-                progress.yield_line();
-                avi_term::line::warn(format!("No se pudo borrar {}: {e}", path.display()));
+                step_failures.push(format!("No se pudo borrar {}: {e}", path.display()));
                 failed.push(path.display().to_string());
             }
         }
+        close_step(&progress, &step_failures);
 
         Ok((
             daemon,
@@ -494,15 +547,13 @@ pub async fn run(
                 return Err(e);
             }
         };
-    // Los pasos 6 a 9 no abortan, solo recogen: el cierre lo decide `failed`.
+    // Los pasos 6 a 9 no abortan, solo recogen: el cierre lo decide `failed`. Con
+    // fallos, cada etapa afectada ya quedó `✗` con sus avisos debajo y el cierre lo
+    // escribe quien convierte el desenlace en error.
     if failed.is_empty() {
         progress.finish("Desinstalación completada", &[]);
     } else {
         progress.close();
-        avi_term::line::warn(format!(
-            "Restos sin borrar: {}",
-            avi_term::fmt::count(failed.len() as u64, "ruta", "rutas")
-        ));
     }
 
     Ok(Outcome {
@@ -526,7 +577,21 @@ pub async fn run(
         dry_run: false,
         daemon_was_running: daemon.was_running,
         failed,
+        plan_lines: Vec::new(),
     })
+}
+
+/// Cierra la etapa en curso de un paso de borrado: sin fallos, la termina; con
+/// fallos, la marca `✗` y escribe un aviso por fallo debajo de su línea.
+fn close_step(progress: &PhaseProgress, failures: &[String]) {
+    if failures.is_empty() {
+        progress.end_stage();
+    } else {
+        progress.fail_current();
+        for failure in failures {
+            avi_term::line::warn(failure);
+        }
+    }
 }
 
 /// Compone el plan del paso 2.
@@ -752,15 +817,10 @@ pub fn simulate(
 ) -> Outcome {
     let plan = compose_plan(roots, receipt, program_dir, options);
     let preview = crate::recovery::preview(roots.recovery_roots());
-    if !avi_term::line::machine_mode() {
-        // El plan es el resultado de la simulación y sale por stdout; el aviso
-        // de que no se modificó nada es el cierre y sale por stderr. Con
-        // `--json` los sustituye el envelope.
-        for line in plan_lines(&plan, options, Some(&preview)) {
-            println!("{line}");
-        }
-        eprintln!("{}", confirm::simulation_notice());
-    }
+    // El plan es el resultado de la simulación: no se escribe aquí, lo devuelve
+    // el desenlace para que el binario lo imprima por stdout o lo meta en el
+    // envelope.
+    let plan_lines = plan_lines(&plan, options, Some(&preview));
     // `removed` son las entradas del plan y `swept` el barrido previsto, en las dos
     // ramas: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
@@ -791,6 +851,7 @@ pub fn simulate(
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
+        plan_lines,
     }
 }
 
@@ -873,7 +934,7 @@ fn confirm(summary: &[String], options: &Options) -> anyhow::Result<Decision> {
     } else {
         "¿Desinstalar el programa y borrar lo indicado?"
     };
-    confirm::confirm(
+    confirm::ask(
         &Confirmation {
             kind: Kind::Destructive,
             question,
@@ -1237,6 +1298,34 @@ mod tests {
         assert!(msg.starts_with("El directorio se borrará al terminar este proceso: C:\\avi"));
         assert!(msg.contains("depende del proceso que ejecuta el comando"));
         assert!(msg.contains("borra esa ruta a mano"));
+    }
+
+    fn reason_of(outcome: &Outcome) -> Option<String> {
+        outcome.lifecycle_error().map(|e| e.reason.to_string())
+    }
+
+    #[test]
+    fn lifecycle_error_is_none_without_leftovers() {
+        assert_eq!(reason_of(&Outcome::default()), None);
+    }
+
+    #[test]
+    fn lifecycle_error_is_uninstall_incomplete_with_failed_paths() {
+        let outcome = Outcome {
+            failed: vec!["a".to_string(), "b".to_string()],
+            ..Outcome::default()
+        };
+        assert_eq!(reason_of(&outcome).as_deref(), Some("uninstall_incomplete"));
+    }
+
+    #[test]
+    fn program_dir_kept_wins_over_uninstall_incomplete() {
+        let outcome = Outcome {
+            failed: vec!["a".to_string()],
+            program_dir_kept: Some("a: en uso".to_string()),
+            ..Outcome::default()
+        };
+        assert_eq!(reason_of(&outcome).as_deref(), Some("program_dir_kept"));
     }
 }
 

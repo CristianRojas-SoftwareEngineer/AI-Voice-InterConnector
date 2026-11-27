@@ -428,6 +428,7 @@ fn interrupted_update_leaves_installed_version_operational() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
     let sandbox = Sandbox::new("interrupted");
     sandbox.seed_env();

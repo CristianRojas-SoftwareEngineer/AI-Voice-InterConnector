@@ -30,6 +30,8 @@ use thiserror::Error;
 /// - 22: `program_dir_kept`, de `self uninstall`.
 /// - 23: `cleanup_incomplete`, de `cleanup`: borró lo que pudo y quedaron rutas sin
 ///   borrar.
+/// - 24: `uninstall_incomplete`, de `self uninstall`: desinstaló lo que pudo y
+///   quedaron rutas sin borrar.
 /// - 1 también para `speech_metadata_corrupt`: los metadatos de un audio
 ///   sintetizado guardado están dañados y no se pueden leer.
 /// - 2 también para `output_exists`: `speech denoise` no sobrescribe un archivo de
@@ -81,6 +83,8 @@ pub enum ExitCode {
     ProgramDirKept = 22,
     #[error("La limpieza terminó con rutas sin borrar")]
     CleanupIncomplete = 23,
+    #[error("La desinstalación terminó con rutas sin borrar")]
+    UninstallIncomplete = 24,
     #[error("Interrupción por el usuario")]
     Interrupted = 130,
 }
@@ -157,6 +161,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("checksum_mismatch", ExitCode::ChecksumMismatch),
     ("program_dir_kept", ExitCode::ProgramDirKept),
     ("cleanup_incomplete", ExitCode::CleanupIncomplete),
+    ("uninstall_incomplete", ExitCode::UninstallIncomplete),
     ("io_error", ExitCode::Error),
     ("model_unavailable", ExitCode::Error),
     ("release_unavailable", ExitCode::Error),
@@ -341,6 +346,10 @@ pub const REASON_SOLUTIONS: &[(&str, Option<&str>)] = &[
         "cleanup_incomplete",
         Some("Cierra los programas que usan esas rutas y repite `{cmd}`."),
     ),
+    (
+        "uninstall_incomplete",
+        Some("Cierra los programas que usan esas rutas y repite `{cmd}`."),
+    ),
     ("io_error", None),
     (
         "model_unavailable",
@@ -503,6 +512,7 @@ mod tests {
         ("checksum_mismatch", 21),
         ("program_dir_kept", 22),
         ("cleanup_incomplete", 23),
+        ("uninstall_incomplete", 24),
         ("io_error", 1),
         ("model_unavailable", 1),
         ("release_unavailable", 1),

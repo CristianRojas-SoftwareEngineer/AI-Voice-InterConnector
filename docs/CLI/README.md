@@ -87,9 +87,10 @@ La CLI Rust (clap) expone los comandos de nivel superior que listan las dos tabl
 | 21 | `ExitCode::ChecksumMismatch` | El archivo descargado no coincide con el hash de `SHA256SUMS.txt` |
 | 22 | `ExitCode::ProgramDirKept` | El resto se desinstaló pero el directorio de programa no se pudo borrar |
 | 23 | `ExitCode::CleanupIncomplete` | La limpieza terminó con rutas sin borrar |
+| 24 | `ExitCode::UninstallIncomplete` | La desinstalación terminó con rutas sin borrar |
 | 130 | `ExitCode::Interrupted` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
-Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian; el 7 y el 8 no existen. Los códigos del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de las [reglas transversales](../specs/LIFECYCLE.md#81-reglas-transversales)** (`crates/avi-core/src/exit_codes.rs`). Los del 18 al 23 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall` y `cleanup_incomplete` (23) de `cleanup`; todos los del 11 al 23 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
+Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian; el 7 y el 8 no existen. Los códigos del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de las [reglas transversales](../specs/LIFECYCLE.md#81-reglas-transversales)** (`crates/avi-core/src/exit_codes.rs`). Los del 18 al 24 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall` `cleanup_incomplete` (23) de `cleanup` y `uninstall_incomplete` (24) de `self uninstall`; todos los del 11 al 24 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
 
 Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). `speech denoise` usa ese flag global para emitir JSONL, una línea por evento o resultado. El envelope de la CLI lleva `schema_version`; el **protocolo del daemon lleva su propia versión** ([las dos versiones de esquema](CONTRACT.md#las-dos-versiones-de-esquema)), porque son contratos independientes.
 

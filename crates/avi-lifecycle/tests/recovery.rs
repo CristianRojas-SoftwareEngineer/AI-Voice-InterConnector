@@ -266,6 +266,7 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
 #[test]
 fn interrupted_transaction_is_recovered_next_run() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     for (slug, point, state, commit) in POINTS {
@@ -462,6 +463,7 @@ fn interrupted_install_recovers_next_run() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
     let points = [
         (FaultPoint::BeforePark, true),
@@ -552,6 +554,7 @@ fn fault_injection_is_inert_without_the_feature() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("inert-injection");
     sandbox.seed_env();
     let exe = sandbox.write_bundle(&sandbox.staging());
@@ -587,6 +590,7 @@ fn fault_injection_is_inert_without_the_feature() {
 #[test]
 fn uninstall_recovers_before_it_plans() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("recover-uninstall");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -749,6 +753,7 @@ fn reused_pid_is_swept_while_the_live_owner_is_kept() {
 #[test]
 fn unreadable_journal_stops_the_operation_without_deleting() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("unreadable-journal");
     sandbox.seed_env();
     sandbox.seed_state();

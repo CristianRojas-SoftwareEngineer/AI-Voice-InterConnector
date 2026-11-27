@@ -5460,12 +5460,39 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             })?;
             let env = lifecycle::install::Env::from_current_exe(exe, VERSION, parked_holder)
                 .map_err(lifecycle_error_to_cli)?;
+            // El hijo del traspaso de `self update` no escribe cabecera: sus etapas
+            // salen anidadas dentro de la etapa del padre, que ya la escribió.
+            let handover = std::env::var_os(lifecycle::update::HANDOVER_PARENT_PID_ENV).is_some();
             let options = lifecycle::install::Options {
                 assume_yes: yes,
                 no_setup,
                 no_modify_path,
                 force,
+                handover,
             };
+            if !handover {
+                // La cabecera va antes del plan y de cualquier pregunta.
+                let (verb, mode_id) =
+                    match lifecycle::install::detect_mode(&env.exe, &env.program_dir) {
+                        lifecycle::install::Mode::Install => ("Instalación", "install"),
+                        lifecycle::install::Mode::Repair => ("Reparación", "repair"),
+                    };
+                avi_term::line::context_with(
+                    &format!(
+                        "{verb} de ai-voice-interconnector {VERSION}{}",
+                        if no_modify_path {
+                            " · sin modificar el PATH"
+                        } else {
+                            ""
+                        }
+                    ),
+                    &[
+                        ("version", text_value(VERSION)),
+                        ("mode", text_value(mode_id)),
+                        ("modify_path", ContextValue::Bool(!no_modify_path)),
+                    ],
+                );
+            }
             let outcome =
                 lifecycle::install::install(&env, &options, &ProductProcesses, &PlatformRemoval)
                     .await
@@ -5501,22 +5528,28 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                         "message": cause.message
                     });
                 }
+                if outcome.status == "cancelled" {
+                    on["stages"] = json!([]);
+                }
                 emit_raw_json(on);
-            } else if let Some((closing, details)) = outcome.summary.split_first() {
-                // El cierre y los detalles salen por stderr; los avisos de después,
-                // con `warn`. Si el usuario canceló, el resumen está vacío.
-                avi_term::line::ok(closing);
-                for line in details {
-                    avi_term::line::detail(line);
-                }
-                for warning in &outcome.warnings {
-                    avi_term::line::warn(warning);
-                }
             }
+            // En texto no queda nada por escribir: la librería, dueña del indicador,
+            // pinta etapas, avisos y cierre.
             match partial {
-                Some(failure) => Ok(Outcome::Verdict(
-                    ExitCode::from_reason(failure.reason).code(),
-                )),
+                Some(failure) => {
+                    // Con el traspaso, el padre lee `models_cause` del envelope y escribe
+                    // él el error: el hijo solo emite el envelope y sale por veredicto.
+                    if !handover {
+                        print_error_text(&CliError::new(
+                            ExitCode::from_reason(failure.reason),
+                            failure.reason,
+                            failure.message.clone(),
+                        ));
+                    }
+                    Ok(Outcome::Verdict(
+                        ExitCode::from_reason(failure.reason).code(),
+                    ))
+                }
                 None => Ok(Outcome::Done),
             }
         }
@@ -5546,6 +5579,22 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 daemon_addr: lifecycle::daemon_stop::default_addr(),
                 home: home_dir()?,
             };
+            // La cabecera va antes del plan y de cualquier pregunta.
+            avi_term::line::context_with(
+                &format!(
+                    "Desinstalación de ai-voice-interconnector{}{}",
+                    if keep_data {
+                        " · conservando los datos"
+                    } else {
+                        ""
+                    },
+                    if dry_run { " · simulación" } else { "" }
+                ),
+                &[
+                    ("keep_data", ContextValue::Bool(keep_data)),
+                    ("dry_run", ContextValue::Bool(dry_run)),
+                ],
+            );
             let outcome = lifecycle::uninstall::run(
                 &env,
                 &lifecycle::uninstall::Options {
@@ -5558,14 +5607,28 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             )
             .await
             .map_err(lifecycle_error_to_cli)?;
-            // `program_dir_kept` es un éxito parcial con código propio: el resto se completó
-            // y el directorio de programa sigue en disco. Se emite el envelope igual y solo
-            // cambian el `reason` y el código de salida, como en `self install`.
+            // La simulación escribe su plan por stdout (en `--json` lo lleva el
+            // envelope) y cierra con el mismo texto en los dos modos.
+            if outcome.status == "planned" {
+                if !json_mode {
+                    for line in &outcome.plan_lines {
+                        println!("{line}");
+                    }
+                }
+                avi_term::line::ok("Simulación completada · no se ha borrado nada");
+            } else if outcome.status == "not_installed" {
+                // El literal de `status` es del contrato `--json` y no sale en el
+                // texto; el cierre es el mismo en los dos modos.
+                avi_term::line::ok("No había nada que desinstalar.");
+            }
+            // `program_dir_kept` y `uninstall_incomplete` son éxitos parciales con código
+            // propio: el resto se completó y quedaron rutas en disco. Se emite el envelope
+            // igual y solo cambian el `reason` y el código de salida, como en `self install`.
             let kept = outcome.lifecycle_error();
             if json_mode {
                 // Sin `dry_run`: con `status: "planned"` el simulacro ya se lee como
                 // un plan y la clave sería redundante.
-                emit_raw_json(json!({
+                let mut body = json!({
                     "status": outcome.status,
                     "reason": match &kept {
                         Some(failure) => Value::String(failure.reason.to_string()),
@@ -5577,29 +5640,23 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                         "path": entry.path.display().to_string(),
                         "reason": entry.reason,
                     })).collect::<Vec<_>>(),
-                    "path_reverted": outcome.path_reverted
-                }));
-            } else if outcome.status == "cancelled" {
-                // `confirm::confirm` ya escribió «Cancelado.» por stderr: el
-                // handler no lo repite, porque el literal es del motor de
-                // confirmación.
-            } else if outcome.status == "not_installed" {
-                // El literal de `status` es del contrato `--json` y no sale en el
-                // texto. La simulación y la ejecución real escriben su plan y su
-                // cierre en la librería, que es dueña del indicador.
-                avi_term::line::ok("No había nada que desinstalar.");
+                    "path_reverted": outcome.path_reverted,
+                    "failed": outcome.failed
+                });
+                if outcome.status == "cancelled" {
+                    body["stages"] = json!([]);
+                }
+                emit_raw_json(body);
             }
             match kept {
                 Some(failure) => {
-                    // El envelope ya salió por stdout: en `--json` no se escribe
-                    // nada más; en texto, el error con su solución.
-                    if !json_mode {
-                        print_error_text(&CliError::new(
-                            ExitCode::from_reason(failure.reason),
-                            failure.reason,
-                            failure.message.clone(),
-                        ));
-                    }
+                    // El envelope ya salió por stdout; el texto del error con su
+                    // solución va por stderr en los dos modos.
+                    print_error_text(&CliError::new(
+                        ExitCode::from_reason(failure.reason),
+                        failure.reason,
+                        failure.message.clone(),
+                    ));
                     Ok(Outcome::Verdict(
                         ExitCode::from_reason(failure.reason).code(),
                     ))

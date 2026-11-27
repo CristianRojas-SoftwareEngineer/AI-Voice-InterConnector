@@ -3012,6 +3012,11 @@ fn uninstall_without_installation_says_so_instead_of_printing_a_blank_line() {
         stderr.contains("✓ No había nada que desinstalar."),
         "el desenlace dice que no había nada que desinstalar: {stderr}"
     );
+    // La cabecera sale antes del cierre.
+    assert!(
+        stderr.starts_with("Desinstalación de ai-voice-interconnector"),
+        "la cabecera abre la salida: {stderr}"
+    );
     // Y no dice que desinstaló algo, que sería mentira.
     assert!(
         !stderr.contains("Desinstalación completada"),
@@ -10119,6 +10124,134 @@ fn uninstall_dry_run_keep_data_reports_preserved_models() {
         "{actual}"
     );
     assert_eq!(filesystem_snapshot(dir), before);
+}
+
+/// Sandbox con una instalación registrada (recibo en el directorio de programa)
+/// sobre la que `self uninstall` puede actuar sin tocar la instalación del usuario.
+fn uninstall_sandbox_with_receipt(tag: &str) -> (ContractSandbox, Vec<(String, String)>) {
+    use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path().to_path_buf();
+    let program = dir.join("install");
+    let receipt = InstallReceipt::new(
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::ARCH,
+        avi_lifecycle::channel::Channel::Script,
+        &program,
+        vec![avi_lifecycle::uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: dir.join("data"),
+            cache_dir: dir.join("cache"),
+        },
+    );
+    receipt::write_to(&receipt, &program).unwrap();
+    (sandbox, envs)
+}
+
+/// La simulación de `self uninstall` con instalación registrada: cabecera, plan
+/// solo por stdout en texto, cierre de simulación después del plan, el mismo
+/// stderr con y sin `--json` y envelope `planned` con `context` y sin `stages`.
+#[test]
+fn uninstall_dry_run_has_header_plan_on_stdout_and_same_stderr_with_json() {
+    let (stderr, stdout) = assert_same_stderr_with_and_without_json(
+        0,
+        &["self", "uninstall", "--keep-data", "--dry-run"],
+        uninstall_sandbox_with_receipt,
+    );
+    assert!(
+        stderr.starts_with(
+            "Desinstalación de ai-voice-interconnector · conservando los datos · simulación"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .trim_end()
+            .ends_with("✓ Simulación completada · no se ha borrado nada"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("Se desinstalará"),
+        "el plan va por stdout: {stderr}"
+    );
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+    assert_eq!(envelope["status"], "planned", "{envelope}");
+    assert_eq!(envelope["context"]["keep_data"], true, "{envelope}");
+    assert_eq!(envelope["context"]["dry_run"], true, "{envelope}");
+    assert!(envelope.get("stages").is_none(), "{envelope}");
+
+    // En texto, el plan sale por stdout y el cierre por stderr.
+    let (sandbox, envs) = uninstall_sandbox_with_receipt("uninstall-dry-text");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, text_stdout, _stderr) =
+        run_capture(&["self", "uninstall", "--keep-data", "--dry-run"], &envs);
+    assert_eq!(code, 0);
+    assert!(text_stdout.contains("Se desinstalará"), "{text_stdout}");
+    drop(sandbox);
+}
+
+/// `self uninstall --yes` real: cabecera, etapas numeradas, cierre
+/// `✓ Desinstalación completada` y el mismo stderr con y sin `--json`.
+#[test]
+fn uninstall_real_run_has_the_same_stderr_with_and_without_json() {
+    // El plan que la confirmación escribe lleva rutas y tamaños propios de cada
+    // sandbox, así que se comparan la cabecera, las etapas y el cierre.
+    let mut stages = Vec::new();
+    let mut text_stderr = String::new();
+    let mut json_stdout = String::new();
+    for (tag, json) in [
+        ("uninstall-real-text", false),
+        ("uninstall-real-json", true),
+    ] {
+        let (_sandbox, envs) = uninstall_sandbox_with_receipt(tag);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut args = vec!["self", "uninstall", "--yes"];
+        if json {
+            args.insert(0, "--json");
+        }
+        let (code, stdout, stderr) = run_capture(&args, &envs);
+        assert_eq!(code, 0, "json={json}: {stderr}");
+        stages.push(
+            stderr
+                .lines()
+                .filter(|l| {
+                    l.starts_with('[') || l.starts_with('✓') || l.starts_with("Desinstalación")
+                })
+                .map(|line| {
+                    line.split_whitespace()
+                        .filter(|word| !word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .collect::<Vec<_>>(),
+        );
+        if json {
+            json_stdout = stdout;
+        } else {
+            text_stderr = stderr;
+        }
+    }
+    assert_eq!(stages[0], stages[1], "--json no cambia stderr");
+    let (stderr, stdout) = (text_stderr, json_stdout);
+    assert!(
+        stderr.starts_with("Desinstalación de ai-voice-interconnector"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("[1/4]"),
+        "etapas numeradas sin daemon: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Parada del daemon"),
+        "sin daemon no hay etapa de parada: {stderr}"
+    );
+    assert!(stderr.contains("✓ Desinstalación completada"), "{stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
+    assert_eq!(envelope["status"], "uninstalled", "{envelope}");
+    assert!(envelope["reason"].is_null(), "{envelope}");
+    assert_eq!(envelope["context"]["keep_data"], false, "{envelope}");
+    assert_eq!(envelope["failed"], serde_json::json!([]), "{envelope}");
 }
 
 /// Con `--json`, un rechazo de clap emite el envelope `usage_error` por
