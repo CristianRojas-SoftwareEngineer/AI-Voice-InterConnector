@@ -16,6 +16,7 @@ use avi_store::{Label, ModelStore, SpeechStore, VoiceName, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::EngineHolder;
 use avi_term::progress::PhaseProgress;
+use avi_term::report::{ContextValue, PhaseSpec, Pipeline};
 use avi_term::stage::{self, Stage};
 use avi_tts::Qwen3TtsEngine;
 // El motor de traducción real solo entra en scope con `native-translation`.
@@ -1749,6 +1750,69 @@ fn audio_source_label(audio: Option<&str>, mic_max: Option<u64>) -> String {
     }
 }
 
+/// Valor de texto de un par del `context` del JSON.
+fn text_value(value: impl Into<String>) -> ContextValue {
+    ContextValue::Text(value.into())
+}
+
+/// Fase del recorrido declarado de un comando.
+fn phase_spec(
+    id: &'static str,
+    title: &'static str,
+    short: &'static str,
+    stages: Vec<&'static Stage>,
+) -> PhaseSpec {
+    PhaseSpec {
+        id,
+        title,
+        short,
+        stages,
+    }
+}
+
+/// Fase `Entrada` de los comandos que parten de un audio: grabación con
+/// micrófono o lectura de un archivo y, con `denoise`, la limpieza de ruido.
+fn input_phase(mic: bool, denoise: bool) -> PhaseSpec {
+    let mut stages = vec![if mic {
+        &stage::CAPTURING
+    } else {
+        &stage::READING
+    }];
+    if denoise {
+        stages.push(&stage::DENOISING);
+    }
+    phase_spec("input", "Entrada", "Entrada", stages)
+}
+
+/// Fase `Texto` con la traducción, solo si el idioma de origen difiere del de
+/// destino; sin traducción el recorrido no la cuenta.
+fn translation_phase(source: &str, target: &str) -> Option<PhaseSpec> {
+    (source != target).then(|| phase_spec("text", "Texto", "Texto", vec![&stage::TRANSLATING]))
+}
+
+/// Pares del `context` que describen la fuente de audio: `input` (`mic` o
+/// `file`) y, según el caso, `max_secs` (solo micrófono) o `file` (nombre sin
+/// carpeta, solo archivo).
+fn audio_source_context(
+    audio: Option<&str>,
+    mic_max: Option<u64>,
+) -> Vec<(&'static str, ContextValue)> {
+    match (audio, mic_max) {
+        (_, Some(max)) => vec![
+            ("input", text_value("mic")),
+            ("max_secs", ContextValue::Int(max)),
+        ],
+        (Some(path), None) => {
+            let name = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string());
+            vec![("input", text_value("file")), ("file", text_value(name))]
+        }
+        (None, None) => vec![("input", text_value("file"))],
+    }
+}
+
 /// Envuelve un handler que devuelve `Result<(), CliError>` en el tipo de `main`.
 fn ok(result: Result<(), CliError>) -> Result<Outcome, CliError> {
     result.map(|()| Outcome::Done)
@@ -3055,25 +3119,63 @@ fn collision_policy(force: bool, skip_existing: bool) -> avi_store::CollisionPol
     }
 }
 
-/// Único punto de emisión de `speech synthesize`: traduce el desenlace a su
-/// envelope JSON, o en texto a la ruta del WAV por stdout y la línea de cierre
-/// por stderr. Cierra el indicador.
+/// Motivo con el que `--skip-existing` omite las etapas de una etiqueta ocupada.
+const SKIPPED_EXISTING_REASON: &str = "ya existía";
+
+/// Desenlace de `speech synthesize` y texto traducido, si los idiomas difieren.
+struct Synthesized {
+    outcome: SynthesizeOutcome,
+    translated: Option<String>,
+}
+
+/// Recorrido declarado de `speech synthesize`: la traducción, si los idiomas
+/// difieren; la síntesis (con la reproducción si hay `--play`, y entonces la fase
+/// es `Voz · streaming`); y el guardado.
+fn synthesize_pipeline(source: &str, target: &str, play: bool) -> Pipeline {
+    let (title, stages) = if play {
+        (
+            "Voz · streaming",
+            vec![&stage::SYNTHESIZING, &stage::PLAYING],
+        )
+    } else {
+        ("Voz", vec![&stage::SYNTHESIZING])
+    };
+    Pipeline::new(
+        translation_phase(source, target)
+            .into_iter()
+            .chain([
+                phase_spec("voice", title, "Voz", stages),
+                phase_spec("save", "Guardado", "Guardado", vec![&stage::SAVING]),
+            ])
+            .collect(),
+    )
+}
+
+/// Registra el guardado de un `--play` cuando el menú termina: el guardado
+/// ocurre dentro del menú (opción 2), así que se anota al volver, sin duración
+/// propia; un descarte lo deja omitido.
+fn record_menu_saving(progress: &PhaseProgress, outcome: &SynthesizeOutcome) {
+    match outcome {
+        SynthesizeOutcome::Discarded => progress.skip(&stage::SAVING, "descartado"),
+        SynthesizeOutcome::Saved(_) | SynthesizeOutcome::Skipped(_) => {
+            progress.phase(&stage::SAVING);
+            progress.end_stage();
+        }
+    }
+}
+
+/// Único punto de emisión de `speech synthesize`: escribe `Audio: <ruta>` bajo
+/// el guardado, cierra el indicador y, con `--json`, emite el envelope cuando
+/// ya no queda ninguna etapa ni línea viva abiertas.
 fn emit_synthesize(
     json_mode: bool,
     voice: &str,
-    outcome: &SynthesizeOutcome,
+    synthesized: &Synthesized,
     progress: PhaseProgress,
 ) {
-    match outcome {
+    let mut envelope = match &synthesized.outcome {
         SynthesizeOutcome::Saved(path) => {
-            if json_mode {
-                emit_raw_json(json!({
-                    "status": "success",
-                    "audio_path": path.to_string_lossy(),
-                    "voice": voice,
-                }));
-            }
-            progress.result(None, &path.display().to_string());
+            progress.result(Some("Audio"), &path.display().to_string());
             // La duración del audio sale de las muestras del WAV guardado.
             let extras: Vec<String> = audio::wav_duration_secs(path)
                 .map(|secs| {
@@ -3085,23 +3187,35 @@ fn emit_synthesize(
                 .into_iter()
                 .collect();
             progress.finish("Síntesis completada", &extras);
+            json!({
+                "status": "synthesized",
+                "audio_path": path.to_string_lossy(),
+                "voice": voice,
+            })
         }
         SynthesizeOutcome::Skipped(path) => {
-            if json_mode {
-                emit_raw_json(json!({
-                    "status": "skipped",
-                    "audio_path": path.to_string_lossy(),
-                    "voice": voice,
-                }));
-            }
-            progress.result(None, &path.display().to_string());
+            progress.result(Some("Audio"), &path.display().to_string());
             progress.close();
+            avi_term::line::separator();
             avi_term::line::ok("Ya existía; se conserva sin sintetizar de nuevo.");
+            json!({
+                "status": "skipped",
+                "audio_path": path.to_string_lossy(),
+                "voice": voice,
+            })
         }
         SynthesizeOutcome::Discarded => {
-            progress.fail();
-            emit_play_discarded(json_mode, voice);
+            progress.close();
+            avi_term::line::separator();
+            avi_term::line::ok("Audio descartado; no se ha guardado.");
+            play_discarded_envelope(voice)
         }
+    };
+    if json_mode {
+        if let Some(translated) = &synthesized.translated {
+            envelope["translated"] = json!(translated);
+        }
+        emit_raw_json(envelope);
     }
 }
 
@@ -3110,20 +3224,16 @@ fn play_discarded_envelope(voice: &str) -> Value {
     json!({ "status": "discarded", "voice": voice })
 }
 
-/// Emite el descarte del menú `--play`: envelope JSON o línea de cierre por
-/// stderr, según el modo.
-fn emit_play_discarded(json_mode: bool, voice: &str) {
-    if json_mode {
-        emit_raw_json(play_discarded_envelope(voice));
-    } else {
-        avi_term::line::ok("Audio descartado; no se ha guardado.");
-    }
-}
-
 /// Fuente de las opciones del menú `--play`: lee una línea de la entrada
-/// estándar. Es inyectable para poder ejercitar el menú sin TTY.
+/// estándar. Es inyectable para poder ejercitar el menú sin TTY. La espera de
+/// la respuesta es una pregunta: su duración no cuenta como trabajo del comando.
 fn menu_stdin() -> impl FnMut(&mut String) -> std::io::Result<usize> {
-    |line: &mut String| std::io::stdin().read_line(line)
+    |line: &mut String| {
+        avi_term::report::begin_question();
+        let read = std::io::stdin().read_line(line);
+        avi_term::report::end_question(true);
+        read
+    }
 }
 
 /// Seeds de las regeneraciones del menú `--play`: cada toma nueva usa un seed
@@ -3637,10 +3747,20 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 audio_source_label(audio.as_deref(), mic_max),
                 route_label(use_daemon)
             );
+            // El recorrido se declara antes de abrir ninguna etapa. La limpieza
+            // de ruido solo es una etapa propia en la ruta local: el daemon
+            // transcribe en una petición sin eventos y la limpia dentro de ella.
+            avi_term::report::declare(Pipeline::new(vec![
+                input_phase(mic, denoise && !use_daemon),
+                phase_spec("text", "Texto", "Texto", vec![&stage::TRANSCRIBING]),
+            ]));
             // La cabecera va tras validar la invocación y antes del primer
             // acceso a recursos (modelo, micrófono, daemon): un error de
             // recurso sale con ella y uno de invocación, sin ella.
-            avi_term::line::context(&context);
+            let mut pairs = vec![("source_language", text_value(source_language.as_str()))];
+            pairs.extend(audio_source_context(audio.as_deref(), mic_max));
+            pairs.push(("route", text_value(route_label(use_daemon))));
+            avi_term::line::context_with(&context, &pairs);
             if use_daemon {
                 let progress = PhaseProgress::new();
                 let result = transcribe_via_daemon(
@@ -3694,19 +3814,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     )
                     .await?;
 
-                    progress.phase(&stage::TRANSCRIBING);
-                    // La carga del modelo también cuenta en la etapa y deja
-                    // avanzar su contador.
-                    let engine = progress
-                        .while_running(|| STT_HOLDER.get_or_try_init(stt_dir))
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_failed",
-                                "No se pudo cargar el modelo de transcripción.",
-                            )
-                            .with_detail(format!("{e:#}"))
-                        })?;
                     // Limpieza de ruido (opt-in) antes de STT: toma de turno,
                     // 48 kHz, inferencia y vuelta a 16 kHz. El modelo se resuelve
                     // y verifica antes del trabajo pesado; fallo de modelo es
@@ -3720,6 +3827,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 })?;
                             let models = denoise::service::ServiceModels::resolve()
                                 .map_err(|e| e.to_cli_error())?;
+                            progress.phase(&stage::DENOISING);
                             progress
                                 .while_running(|| {
                                     models.denoise_pcm16_mono(&pcm, 16_000, work_dir.path())
@@ -3732,6 +3840,19 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         let denoised = pcm;
                         denoised
                     };
+                    progress.phase(&stage::TRANSCRIBING);
+                    // La carga del modelo también cuenta en la etapa y deja
+                    // avanzar su contador.
+                    let engine = progress
+                        .while_running(|| STT_HOLDER.get_or_try_init(stt_dir))
+                        .map_err(|e| {
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_failed",
+                                "No se pudo cargar el modelo de transcripción.",
+                            )
+                            .with_detail(format!("{e:#}"))
+                        })?;
                     let text = progress.while_running(|| {
                         avi_core::engine::transcribe_speech(engine, &pcm_for_stt)
                     })?;
@@ -3760,19 +3881,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // El indicador nace antes de las validaciones, y el patrón de
             // bloque externo garantiza que se cierra en cualquier camino: los
             // `?` de las validaciones no pueden dejar la fase abierta.
-            //
-            // Sin `--play` y sin traducción (origen igual al destino) la síntesis
-            // es la única etapa de trabajo: no deja su línea y queda solo el
-            // cierre, que ya da la duración del audio. Se decide con los
-            // argumentos, porque el indicador nace antes de las validaciones.
-            let source_is_target =
-                source_language.as_deref().unwrap_or(&target_language) == target_language;
-            let progress = if play || !source_is_target {
-                PhaseProgress::new()
-            } else {
-                PhaseProgress::new().single_stage()
-            };
-            let result = async {
+            let progress = PhaseProgress::new();
+            let result: Result<Synthesized, CliError> = async {
                 progress.phase(&stage::VALIDATING);
                 let (voice, label, existing) = prepare_synthesis(
                     || {
@@ -3801,24 +3911,46 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             .map_err(|conflict| conflict_cli_error(&conflict))
                     },
                 )?;
-                // `--skip-existing` sobre una etiqueta ocupada termina aquí, antes
-                // de comprobar el modelo o el daemon: no hace falta sintetizar.
-                if let Some(existing) = existing {
-                    return Ok(SynthesizeOutcome::Skipped(existing));
-                }
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
                 // Dispatch 3 modos (Synthesize es delegable al daemon).
                 let client = daemon_client();
                 let use_daemon = route_to_daemon(routing.mode()).await?;
-                avi_term::line::context(&format!(
-                    "Síntesis {} · voz {} · etiqueta {} · {}",
-                    languages_label(source_eff, &target_language),
-                    voice,
-                    label,
-                    route_label(use_daemon)
-                ));
+                avi_term::report::declare(synthesize_pipeline(source_eff, &target_language, play));
+                avi_term::line::context_with(
+                    &format!(
+                        "Síntesis {} · voz {} · etiqueta {} · {}",
+                        languages_label(source_eff, &target_language),
+                        voice,
+                        label,
+                        route_label(use_daemon)
+                    ),
+                    &[
+                        ("source_language", text_value(source_eff)),
+                        ("target_language", text_value(target_language.as_str())),
+                        ("voice", text_value(voice.as_str())),
+                        ("label", text_value(label.as_str())),
+                        ("route", text_value(route_label(use_daemon))),
+                    ],
+                );
+                // `--skip-existing` sobre una etiqueta ocupada termina aquí, antes
+                // de comprobar el modelo o de pedir nada al daemon: no hace falta
+                // sintetizar. Las etapas pendientes quedan omitidas, no ausentes.
+                if let Some(existing) = existing {
+                    if source_eff != target_language {
+                        progress.skip(&stage::TRANSLATING, SKIPPED_EXISTING_REASON);
+                    }
+                    progress.skip(&stage::SYNTHESIZING, SKIPPED_EXISTING_REASON);
+                    if play {
+                        progress.skip(&stage::PLAYING, SKIPPED_EXISTING_REASON);
+                    }
+                    progress.skip(&stage::SAVING, SKIPPED_EXISTING_REASON);
+                    return Ok(Synthesized {
+                        outcome: SynthesizeOutcome::Skipped(existing),
+                        translated: None,
+                    });
+                }
                 if use_daemon {
                     return synthesize_via_daemon(
                         &progress,
@@ -3848,9 +3980,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 progress.reclaim();
                 let engine = engine_result?;
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
-                let final_text = if source_eff != target_language {
+                let translated = source_eff != target_language;
+                let final_text = if translated {
                     progress.phase(&stage::TRANSLATING);
-                    translate_if_different(&text, source_eff, &target_language, &progress)?
+                    let final_text =
+                        translate_if_different(&text, source_eff, &target_language, &progress)?;
+                    progress.result(Some("Traducción"), &final_text);
+                    final_text
                 } else {
                     text.clone()
                 };
@@ -3934,7 +4070,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &mut resynthesizer,
                     )
                     .await;
-                    outcome?
+                    let outcome = outcome?;
+                    record_menu_saving(&progress, &outcome);
+                    outcome
                 } else {
                     progress.phase(&stage::SAVING);
                     avi_store::persist_locution(
@@ -3950,17 +4088,20 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     .map_err(persist_cli_error)?
                     .into()
                 };
-                Ok(saved)
+                Ok(Synthesized {
+                    outcome: saved,
+                    translated: translated.then_some(final_text),
+                })
             }
             .await;
-            let outcome = match result {
-                Ok(outcome) => outcome,
+            let synthesized = match result {
+                Ok(synthesized) => synthesized,
                 Err(e) => {
                     progress.fail();
                     return Err(e);
                 }
             };
-            emit_synthesize(json_mode, &voice, &outcome, progress);
+            emit_synthesize(json_mode, &voice, &synthesized, progress);
             Ok(())
         }
         SpeechCommands::Say {
@@ -3975,7 +4116,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Patrón de bloque externo: el trabajo que puede fallar vive en un
             // bloque y el cierre del indicador —que consume el indicador— se
             // hace fuera, sobre el resultado ya obtenido.
-            let result: Result<DeliveryStats, CliError> = async {
+            let result: Result<SayOutcome, CliError> = async {
                 progress.phase(&stage::VALIDATING);
                 let (voice, (), ()) = prepare_synthesis(
                     || {
@@ -3991,12 +4132,31 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // Dispatch 3 modos (Say es delegable al daemon).
                 let client = daemon_client();
                 let use_daemon = route_to_daemon(routing.mode()).await?;
-                avi_term::line::context(&format!(
-                    "Lectura en voz alta {} · voz {} · {}",
-                    languages_label(source_eff, &target_language),
-                    voice,
-                    route_label(use_daemon)
+                avi_term::report::declare(Pipeline::new(
+                    translation_phase(source_eff, &target_language)
+                        .into_iter()
+                        .chain([phase_spec(
+                            "voice",
+                            "Voz · streaming",
+                            "Voz",
+                            vec![&stage::SYNTHESIZING, &stage::PLAYING],
+                        )])
+                        .collect(),
                 ));
+                avi_term::line::context_with(
+                    &format!(
+                        "Lectura en voz alta {} · voz {} · {}",
+                        languages_label(source_eff, &target_language),
+                        voice,
+                        route_label(use_daemon)
+                    ),
+                    &[
+                        ("source_language", text_value(source_eff)),
+                        ("target_language", text_value(target_language.as_str())),
+                        ("voice", text_value(voice.as_str())),
+                        ("route", text_value(route_label(use_daemon))),
+                    ],
+                );
                 if use_daemon {
                     return say_via_daemon(
                         &progress,
@@ -4017,9 +4177,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 progress.reclaim();
                 let engine = engine_result?;
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
-                let final_text = if source_eff != target_language {
+                let translated = source_eff != target_language;
+                let final_text = if translated {
                     progress.phase(&stage::TRANSLATING);
-                    translate_if_different(&text, source_eff, &target_language, &progress)?
+                    let final_text =
+                        translate_if_different(&text, source_eff, &target_language, &progress)?;
+                    progress.result(Some("Traducción"), &final_text);
+                    final_text
                 } else {
                     text.clone()
                 };
@@ -4030,7 +4194,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // audio el comando termina sin sintetizar.
                 let delivery =
                     open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?;
-                synthesize_streaming_directly(
+                let stats = synthesize_streaming_directly(
                     &DirectSynthesis {
                         engine: &engine,
                         reference: reference.as_ref(),
@@ -4042,20 +4206,19 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     },
                     &progress,
                     delivery,
-                )
+                )?;
+                Ok(SayOutcome {
+                    stats,
+                    translated: translated.then_some(final_text),
+                })
             }
             .await;
-            finish_progress(progress, &result, "Reproducción completada", |stats| {
-                streaming_closing_extras(stats.first_audio_ms, stats.stalls)
+            finish_progress(progress, &result, "Reproducción completada", |outcome| {
+                streaming_closing_extras(outcome.stats.first_audio_ms, outcome.stats.stalls)
             });
-            let stats = result?;
+            let outcome = result?;
             if json_mode {
-                emit_raw_json(json!({
-                    "status": "reproduced",
-                    "voice": voice,
-                    "first_audio_ms": stats.first_audio_ms,
-                    "stalls": stats.stalls,
-                }));
+                emit_raw_json(say_envelope(&voice, &outcome));
             }
             Ok(())
         }
@@ -4135,9 +4298,30 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             {
                 let client = daemon_client();
                 let use_daemon = route_to_daemon(routing.mode()).await?;
+                let mut text_stages = vec![&stage::TRANSCRIBING];
+                if source_language != target_language {
+                    text_stages.push(&stage::TRANSLATING);
+                }
+                avi_term::report::declare(Pipeline::new(vec![
+                    input_phase(mic, denoise),
+                    phase_spec("text", "Texto", "Texto", text_stages),
+                    phase_spec(
+                        "voice",
+                        "Voz · streaming",
+                        "Voz",
+                        vec![&stage::SYNTHESIZING, &stage::PLAYING],
+                    ),
+                ]));
                 // La cabecera va tras validar la invocación y antes del primer
                 // acceso a recursos (modelos, micrófono, daemon).
-                avi_term::line::context(&context(use_daemon));
+                let mut pairs = vec![
+                    ("source_language", text_value(source_language.as_str())),
+                    ("target_language", text_value(target_language.as_str())),
+                    ("voice", text_value(voice.as_str())),
+                ];
+                pairs.extend(audio_source_context(audio.as_deref(), mic_max));
+                pairs.push(("route", text_value(route_label(use_daemon))));
+                avi_term::line::context_with(&context(use_daemon), &pairs);
                 if use_daemon {
                     let progress = PhaseProgress::new();
                     let result = dub_via_daemon(
@@ -7017,7 +7201,7 @@ async fn synthesize_via_daemon(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<SynthesizeOutcome, CliError> {
+) -> Result<Synthesized, CliError> {
     let speech_store = open_speech_store()?;
     let voice_store = open_voice_store()?;
     let reference = resolve_voice_reference(&voice_store, voice)?;
@@ -7042,6 +7226,12 @@ async fn synthesize_via_daemon(
     // Texto realmente sintetizado: el que ven el menú y el sidecar (paridad
     // con la ruta directa, que guarda el traducido).
     let final_text = first_take.translated.as_str();
+    // El daemon solo entrega el texto traducido en el evento final: la
+    // traducción se muestra al terminar el stream.
+    let translated = (source_language != target_language).then(|| final_text.to_string());
+    if let Some(translated) = &translated {
+        progress.result(Some("Traducción"), translated);
+    }
     // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
     let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
@@ -7081,7 +7271,9 @@ async fn synthesize_via_daemon(
             &mut resynthesizer,
         )
         .await;
-        outcome?
+        let outcome = outcome?;
+        record_menu_saving(progress, &outcome);
+        outcome
     } else {
         progress.phase(&stage::SAVING);
         avi_store::persist_locution(
@@ -7097,11 +7289,36 @@ async fn synthesize_via_daemon(
         .map_err(persist_cli_error)?
         .into()
     };
-    Ok(saved)
+    Ok(Synthesized {
+        outcome: saved,
+        translated,
+    })
+}
+
+/// Desenlace de `speech say`: los datos de la entrega y el texto traducido, si
+/// los idiomas difieren.
+struct SayOutcome {
+    stats: DeliveryStats,
+    translated: Option<String>,
+}
+
+/// Envelope `--json` de `speech say`: `translated` solo si hubo traducción.
+fn say_envelope(voice: &str, outcome: &SayOutcome) -> Value {
+    let mut envelope = json!({
+        "status": "reproduced",
+        "voice": voice,
+        "first_audio_ms": outcome.stats.first_audio_ms,
+        "stalls": outcome.stats.stalls,
+    });
+    if let Some(translated) = &outcome.translated {
+        envelope["translated"] = json!(translated);
+    }
+    envelope
 }
 
 /// `say` vía daemon: reproduce el audio según llega en los eventos `audio` y
-/// devuelve los datos de la entrega.
+/// devuelve los datos de la entrega. El daemon solo entrega el texto traducido
+/// en el evento final, así que la traducción se muestra al terminar el stream.
 // Cada argumento representa un dato de la orden y el indicador pertenece al llamador.
 #[allow(clippy::too_many_arguments)]
 async fn say_via_daemon(
@@ -7112,10 +7329,10 @@ async fn say_via_daemon(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<DeliveryStats, CliError> {
+) -> Result<SayOutcome, CliError> {
     // El dispositivo se abre antes de pedir la síntesis.
     let delivery = open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?;
-    Ok(daemon_synthesize_streaming(
+    let synthesis = daemon_synthesize_streaming(
         progress,
         client,
         text,
@@ -7126,8 +7343,15 @@ async fn say_via_daemon(
         None,
         delivery,
     )
-    .await?
-    .stats)
+    .await?;
+    let translated = (source_language != target_language).then_some(synthesis.translated);
+    if let Some(translated) = &translated {
+        progress.result(Some("Traducción"), translated);
+    }
+    Ok(SayOutcome {
+        stats: synthesis.stats,
+        translated,
+    })
 }
 
 /// Confirmación destructiva de sobrescribir la voz `name`, que tiene las
@@ -7354,12 +7578,17 @@ fn dub_outcome_from_result(val: &Value, stats: &DeliveryStats) -> Result<DubOutc
 
 /// Envelope `--json` de `speech transcribe`.
 fn transcription_envelope(text: &str, source_language: &str) -> Value {
-    json!({ "text": text, "source_language": source_language })
+    json!({
+        "status": "transcribed",
+        "text": text,
+        "source_language": source_language,
+    })
 }
 
 /// Cierra `speech transcribe` en las dos rutas, que son su único punto de
-/// salida: con éxito, el texto por stdout y la línea de cierre por stderr (o el
-/// envelope en JSON); con fallo, borra la línea activa sin cierre.
+/// salida: con éxito, el texto etiquetado `Transcripción` bajo su etapa y la
+/// línea de cierre por stderr, y después el envelope en JSON; con fallo, deja
+/// `✗` en la etapa que falló.
 fn finish_transcription(
     json_mode: bool,
     progress: PhaseProgress,
@@ -7367,7 +7596,7 @@ fn finish_transcription(
     source_language: &str,
 ) -> Result<(), CliError> {
     if let Ok(text) = &result {
-        progress.result(None, text);
+        progress.result(Some("Transcripción"), text);
     }
     finish_progress(progress, &result, "Transcripción completada", |_| {
         Vec::new()
@@ -7554,11 +7783,78 @@ mod tests {
     }
 
     #[test]
-    fn transcription_envelope_has_text_and_source_language() {
+    fn transcription_envelope_has_status_text_and_source_language() {
         assert_eq!(
             transcription_envelope("hola", "es"),
-            json!({ "text": "hola", "source_language": "es" })
+            json!({ "status": "transcribed", "text": "hola", "source_language": "es" })
         );
+    }
+
+    /// `translated` solo viaja en el envelope de `say` si hubo traducción.
+    #[test]
+    fn say_envelope_carries_translated_only_when_translating() {
+        let stats = || DeliveryStats {
+            first_audio_ms: Some(600),
+            stalls: 1,
+            pcm: Vec::new(),
+        };
+        let plain = say_envelope(
+            "default",
+            &SayOutcome {
+                stats: stats(),
+                translated: None,
+            },
+        );
+        assert_eq!(
+            plain,
+            json!({ "status": "reproduced", "voice": "default", "first_audio_ms": 600, "stalls": 1 })
+        );
+        let translated = say_envelope(
+            "default",
+            &SayOutcome {
+                stats: stats(),
+                translated: Some("Hello".to_string()),
+            },
+        );
+        assert_eq!(translated["translated"], "Hello");
+    }
+
+    /// N cuenta solo las etapas que aplican: la traducción, si los idiomas
+    /// difieren, y la reproducción, con `--play`.
+    #[test]
+    fn synthesize_pipeline_counts_only_the_applicable_stages() {
+        assert_eq!(synthesize_pipeline("es", "es", false).total(), 2);
+        assert_eq!(synthesize_pipeline("es", "en", false).total(), 3);
+        assert_eq!(synthesize_pipeline("es", "es", true).total(), 3);
+        assert_eq!(synthesize_pipeline("es", "en", true).total(), 4);
+        let play = synthesize_pipeline("es", "es", true);
+        assert_eq!(play.phases[0].title, "Voz · streaming");
+        assert_eq!(play.phases[1].id, "save");
+        assert_eq!(
+            synthesize_pipeline("es", "es", false).phases[0].title,
+            "Voz"
+        );
+    }
+
+    /// El guardado de un `--play` se anota al volver del menú: hecho si se
+    /// guardó y omitido si se descartó.
+    #[test]
+    fn menu_saving_is_recorded_after_the_menu() {
+        use avi_term::report::StageOutcome;
+
+        let _g = avi_term::report::test_guard();
+        avi_term::report::declare(synthesize_pipeline("es", "es", true));
+        let progress = PhaseProgress::new();
+        record_menu_saving(&progress, &SynthesizeOutcome::Saved(PathBuf::from("a.wav")));
+        record_menu_saving(&progress, &SynthesizeOutcome::Discarded);
+        let stages = avi_term::report::snapshot().stages;
+        assert_eq!(stages[0].label, stage::SAVING.label);
+        assert_eq!(stages[0].outcome, StageOutcome::Ok);
+        assert_eq!(
+            stages[1].outcome,
+            StageOutcome::Skipped("descartado".to_string())
+        );
+        progress.close();
     }
 
     #[test]

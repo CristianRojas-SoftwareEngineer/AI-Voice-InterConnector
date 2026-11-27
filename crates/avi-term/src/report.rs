@@ -404,11 +404,19 @@ impl Report {
 
     /// Abre una etapa en `start` y devuelve su id. Si el recorrido declarado la
     /// incluye, queda con fase y número; si no, una transitoria queda con el
-    /// desenlace `Transient` y una permanente sin número.
+    /// desenlace `Transient` y una permanente sin número. Una etapa que ya se
+    /// abrió con número en este proceso y se vuelve a abrir (la acción extra de
+    /// un menú, como volver a reproducir) es una repetición: queda sin fase ni
+    /// número, para que el recorrido declarado no la cuente dos veces.
     pub(crate) fn open_stage(&mut self, stage: &'static Stage, start: Instant) -> u64 {
+        let repeated = self
+            .stages
+            .iter()
+            .any(|opened| opened.label == stage.label && opened.number.is_some());
         let located = self
             .pipeline
             .as_ref()
+            .filter(|_| !repeated)
             .and_then(|pipeline| pipeline.locate(stage.label));
         let outcome = if located.is_none() && stage.transient {
             StageOutcome::Transient
@@ -717,6 +725,23 @@ mod tests {
         let record = snapshot().stages.remove(0);
         assert_eq!(record.number, Some(1));
         assert_eq!(record.outcome, StageOutcome::Ok);
+    }
+
+    #[test]
+    fn a_repeated_declared_stage_is_unnumbered() {
+        let _g = test_guard();
+        declare(two_phase_pipeline());
+        let progress = PhaseProgress::for_test(Some("1"), false);
+        progress.phase(&stage::SYNTHESIZING);
+        progress.end_stage();
+        progress.phase(&stage::SYNTHESIZING);
+        progress.end_stage();
+        let snap = snapshot();
+        assert_eq!(snap.stages[0].number, Some(2));
+        assert_eq!(snap.stages[0].phase, Some("voice"));
+        assert_eq!(snap.stages[1].number, None);
+        assert_eq!(snap.stages[1].phase, None);
+        assert_eq!(snap.stages[1].outcome, StageOutcome::Ok);
     }
 
     #[test]

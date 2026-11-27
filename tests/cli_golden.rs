@@ -3692,8 +3692,8 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
-        assert_eq!(actual["status"], Value::String("success".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("7".to_string()));
+        assert_eq!(actual["status"], Value::String("synthesized".to_string()));
         let audio = actual["audio_path"]
             .as_str()
             .expect("audio_path debe existir");
@@ -3769,8 +3769,8 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0, "falló la síntesis: {actual}");
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
-        assert_eq!(actual["status"], Value::String("success".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("7".to_string()));
+        assert_eq!(actual["status"], Value::String("synthesized".to_string()));
         let audio = actual["audio_path"]
             .as_str()
             .expect("audio_path debe existir");
@@ -4184,10 +4184,24 @@ mod tts {
                 .expect("ejecutar el binario");
             assert_eq!(output.status.code(), Some(0), "{route}");
             let stdout = String::from_utf8_lossy(&output.stdout);
-            // El resultado por stdout es la ruta del audio ya existente; el
-            // cierre va por stderr.
-            assert_eq!(stdout.trim(), wav.display().to_string(), "{route}");
+            // El resultado por stdout es la ruta del audio ya existente, con su
+            // etiqueta; el cierre va por stderr, con la cabecera y las etapas
+            // pendientes marcadas como omitidas.
+            assert_eq!(
+                stdout.trim(),
+                format!("Audio: {}", wav.display()),
+                "{route}"
+            );
             let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.starts_with("Síntesis es · voz default · etiqueta previa · "),
+                "la cabecera sale aunque no se sintetice: {stderr}"
+            );
+            assert!(
+                stderr.contains("[1/2] ○ Síntesis · ya existía")
+                    && stderr.contains("[2/2] ○ Guardado · ya existía"),
+                "{route}: {stderr}"
+            );
             assert!(
                 stderr.contains("✓ Ya existía; se conserva sin sintetizar de nuevo."),
                 "{route}: {stderr}"
@@ -9987,5 +10001,547 @@ fn synthesize_daemon_invalid_audio_event_exits_1_with_daemon_error() {
     assert!(
         !list.to_string().contains("audio-invalido"),
         "una entrega inválida no debe guardar la locución: {list}"
+    );
+}
+
+/// Sustituye las duraciones de un stderr por `<t>` (`1,2 s`, `2 min 35 s`,
+/// `1 h 02 min`) y la carpeta del sandbox por `<sandbox>`, para comparar la
+/// salida de dos ejecuciones distintas.
+fn normalize_times(text: &str, sandbox: &std::path::Path) -> String {
+    let text = text.replace(&sandbox.display().to_string(), "<sandbox>");
+    let chars: Vec<char> = text.chars().collect();
+    let digits = |from: usize| {
+        chars.get(from..).map_or(0, |rest| {
+            rest.iter().take_while(|c| c.is_ascii_digit()).count()
+        })
+    };
+    let starts_with = |from: usize, pat: &str| {
+        pat.chars()
+            .enumerate()
+            .all(|(k, c)| chars.get(from + k) == Some(&c))
+    };
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let previous_is_word = i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
+        let n = digits(i);
+        if n > 0 && !previous_is_word {
+            let mut j = i + n;
+            // `<h> h <mm> min`
+            if starts_with(j, " h ") && digits(j + 3) == 2 && starts_with(j + 5, " min") {
+                out.push_str("<t>");
+                i = j + 9;
+                continue;
+            }
+            // `<m> min <s> s`
+            if starts_with(j, " min ") {
+                let k = digits(j + 5);
+                if k > 0 && starts_with(j + 5 + k, " s") {
+                    out.push_str("<t>");
+                    i = j + 5 + k + 2;
+                    continue;
+                }
+            }
+            // `<s>[,<d>] s`
+            if starts_with(j, ",") {
+                let k = digits(j + 1);
+                if k > 0 {
+                    j += 1 + k;
+                }
+            }
+            if starts_with(j, " s") && !chars.get(j + 2).is_some_and(|c| c.is_alphanumeric()) {
+                out.push_str("<t>");
+                i = j + 2;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Ejecuta `speech synthesize --daemon` contra un daemon falso que traduce y
+/// sintetiza, con stdout redirigido, y devuelve (código, stdout, stderr
+/// normalizado). Con `json` añade `--json`.
+fn synthesize_against_fake_daemon(tag: &str, json: bool, label: &str) -> (i32, String, String) {
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+        serde_json::json!({ "event": "progress", "stage": "translate" }),
+        serde_json::json!({ "event": "progress", "stage": "warming" }),
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result", "translated": "Hello there" }),
+    ]);
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut args = vec![
+        "speech",
+        "synthesize",
+        "--daemon",
+        "--text",
+        "Hola",
+        "--voice",
+        "default",
+        "--label",
+        label,
+        "--source-language",
+        "es",
+        "--target-language",
+        "en",
+    ];
+    if json {
+        args.insert(0, "--json");
+    }
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    (code, stdout, normalize_times(&stderr, dir))
+}
+
+/// `speech synthesize` por daemon con traducción pinta el recorrido por fases
+/// (mapa, títulos, `[n/N]`, resultados, separador, cierre y desglose), y su
+/// stderr es el mismo con y sin `--json` una vez normalizados los tiempos.
+#[test]
+fn synthesize_daemon_renders_phases_and_keeps_stderr_with_json() {
+    let (code, stdout, text_stderr) =
+        synthesize_against_fake_daemon("synth-phases-text", false, "fases");
+    assert_eq!(code, 0, "{text_stderr}");
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines[0], "Síntesis es → en · voz default · etiqueta fases · daemon",
+        "{text_stderr}"
+    );
+    assert_eq!(lines[1], "Texto → Voz → Guardado", "{text_stderr}");
+    assert_eq!(lines[2], "", "{text_stderr}");
+    for expected in [
+        "Texto",
+        "  [1/3] ✓ Traducción  <t>",
+        "Voz",
+        "  [2/3] ✓ Síntesis    <t>",
+        "Guardado",
+        "  [3/3] ✓ Guardado    <t>",
+        "        │ Audio: <sandbox>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{text_stderr}"
+        );
+    }
+    assert!(
+        text_stderr.contains(&"─".repeat(50)),
+        "separador antes del cierre: {text_stderr}"
+    );
+    assert!(
+        text_stderr.contains("✓ Síntesis completada en <t>"),
+        "cierre con el total: {text_stderr}"
+    );
+    assert!(
+        text_stderr.contains("  Texto <t> · Voz <t> · Guardado <t>"),
+        "desglose por fase: {text_stderr}"
+    );
+    assert!(
+        stdout.contains("Traducción: Hello there") && stdout.contains("Audio: "),
+        "resultados etiquetados por stdout: {stdout}"
+    );
+
+    let (code, json_stdout, json_stderr) =
+        synthesize_against_fake_daemon("synth-phases-json", true, "fases");
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(
+        text_stderr, json_stderr,
+        "--json no cambia stderr (una vez normalizados los tiempos)"
+    );
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["status"], "synthesized", "{envelope}");
+    assert_eq!(envelope["translated"], "Hello there", "{envelope}");
+    assert_eq!(envelope["voice"], "default", "{envelope}");
+    assert!(envelope["audio_path"].is_string(), "{envelope}");
+    assert_eq!(envelope["context"]["route"], "daemon", "{envelope}");
+    assert_eq!(envelope["context"]["label"], "fases", "{envelope}");
+    assert_eq!(envelope["context"]["source_language"], "es", "{envelope}");
+    assert_eq!(envelope["context"]["target_language"], "en", "{envelope}");
+    assert!(envelope["total_ms"].is_u64(), "{envelope}");
+    assert_eq!(envelope["warnings"], serde_json::json!([]), "{envelope}");
+    let stages = envelope["stages"].as_array().expect("stages es una lista");
+    let numbered: Vec<(&str, &str)> = stages
+        .iter()
+        .filter(|stage| stage["transient"] != true)
+        .map(|stage| {
+            (
+                stage["stage"].as_str().expect("stage"),
+                stage["phase"].as_str().expect("phase"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        numbered,
+        [
+            ("translating", "text"),
+            ("synthesizing", "voice"),
+            ("saving", "save")
+        ],
+        "{envelope}"
+    );
+    // D4: `Guardado` está cerrado antes de emitir el envelope, con fin posterior
+    // a su inicio, y `Síntesis` y `Guardado` no se solapan.
+    let saving = stages
+        .iter()
+        .find(|stage| stage["stage"] == "saving")
+        .expect("etapa de guardado");
+    let synthesis = stages
+        .iter()
+        .find(|stage| stage["stage"] == "synthesizing")
+        .expect("etapa de síntesis");
+    assert!(
+        saving["end_ms"].as_u64() >= saving["start_ms"].as_u64(),
+        "{envelope}"
+    );
+    assert!(
+        saving["start_ms"].as_u64() >= synthesis["end_ms"].as_u64(),
+        "{envelope}"
+    );
+    assert!(
+        envelope["total_ms"].as_u64() >= saving["end_ms"].as_u64(),
+        "{envelope}"
+    );
+}
+
+/// Ejecuta `speech transcribe --daemon` sobre un WAV de silencio contra un daemon
+/// falso que responde `status`/`body` a `/transcribe`, con stdout redirigido, y
+/// devuelve (código, stdout, stderr normalizado). Con `json` añade `--json`.
+fn transcribe_against_fake_daemon(
+    tag: &str,
+    json: bool,
+    status: u16,
+    body: Value,
+) -> (i32, String, String) {
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start(status, body);
+    fake.publish_in(&dir.join("data"));
+    let wav = dir.join("entrevista.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut args = vec![
+        "speech",
+        "transcribe",
+        "--daemon",
+        "--audio",
+        wav.to_str().expect("ruta UTF-8"),
+        "--source-language",
+        "es",
+    ];
+    if json {
+        args.insert(0, "--json");
+    }
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    (code, stdout, normalize_times(&stderr, dir))
+}
+
+/// `speech transcribe` por daemon pinta `Entrada → Texto`, deja la transcripción
+/// etiquetada bajo su etapa y emite `status: "transcribed"` con el contexto y las
+/// etapas; su stderr es el mismo con y sin `--json`.
+#[test]
+fn transcribe_daemon_renders_phases_and_keeps_stderr_with_json() {
+    let body = serde_json::json!({ "text": "Hola, mi nombre es Cristian." });
+    let (code, stdout, text_stderr) =
+        transcribe_against_fake_daemon("transcribe-phases-text", false, 200, body.clone());
+    assert_eq!(code, 0, "{text_stderr}");
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines[0], "Transcripción es · archivo entrevista.wav · daemon",
+        "{text_stderr}"
+    );
+    assert_eq!(lines[1], "Entrada → Texto", "{text_stderr}");
+    assert_eq!(lines[2], "", "{text_stderr}");
+    for expected in [
+        "Entrada",
+        "  [1/2] ✓ Lectura        <t>",
+        "Texto",
+        "  [2/2] ✓ Transcripción  <t>",
+        "        │ Transcripción: Hola, mi nombre es Cristian.",
+        "✓ Transcripción completada en <t>",
+        "  Entrada <t> · Texto <t>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{text_stderr}"
+        );
+    }
+    assert_eq!(stdout.trim(), "Transcripción: Hola, mi nombre es Cristian.");
+
+    let (code, json_stdout, json_stderr) =
+        transcribe_against_fake_daemon("transcribe-phases-json", true, 200, body);
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["status"], "transcribed", "{envelope}");
+    assert_eq!(
+        envelope["text"], "Hola, mi nombre es Cristian.",
+        "{envelope}"
+    );
+    assert_eq!(envelope["source_language"], "es", "{envelope}");
+    assert_eq!(envelope["context"]["input"], "file", "{envelope}");
+    assert_eq!(envelope["context"]["file"], "entrevista.wav", "{envelope}");
+    assert_eq!(envelope["context"]["route"], "daemon", "{envelope}");
+    assert!(envelope["total_ms"].is_u64(), "{envelope}");
+    let stages: Vec<(&str, &str)> = envelope["stages"]
+        .as_array()
+        .expect("stages es una lista")
+        .iter()
+        .filter(|stage| stage["transient"] != true)
+        .map(|stage| {
+            (
+                stage["stage"].as_str().expect("stage"),
+                stage["phase"].as_str().expect("phase"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        [("reading", "input"), ("transcribing", "text")],
+        "{envelope}"
+    );
+}
+
+/// Un `empty_transcript` deja `✗ Transcripción`, el separador y el error, y el
+/// JSON de error lleva sus `stages` con la etapa fallida; el stderr es el mismo
+/// con y sin `--json`.
+#[test]
+fn transcribe_daemon_empty_transcript_leaves_a_failed_stage() {
+    let body = serde_json::json!({
+        "status": "error",
+        "reason": "empty_transcript",
+        "message": "No se reconoció voz en el audio.",
+    });
+    let (code, _stdout, text_stderr) =
+        transcribe_against_fake_daemon("transcribe-empty-text", false, 400, body.clone());
+    assert_eq!(code, 2, "{text_stderr}");
+    let failed = text_stderr
+        .find("✗ Transcripción")
+        .unwrap_or_else(|| panic!("falta `✗ Transcripción`:\n{text_stderr}"));
+    let rule = text_stderr.find(&"─".repeat(50)).expect("separador");
+    let error = text_stderr.find("Error:").expect("error");
+    assert!(failed < rule && rule < error, "{text_stderr}");
+
+    let (code, json_stdout, json_stderr) =
+        transcribe_against_fake_daemon("transcribe-empty-json", true, 400, body);
+    assert_eq!(code, 2, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["reason"], "empty_transcript", "{envelope}");
+    let transcribing = envelope["stages"]
+        .as_array()
+        .expect("stages es una lista")
+        .iter()
+        .find(|stage| stage["stage"] == "transcribing")
+        .unwrap_or_else(|| panic!("falta la etapa de transcripción: {envelope}"));
+    assert_eq!(transcribing["failed"], true, "{envelope}");
+}
+
+/// Ejecuta `speech say --daemon` contra un daemon falso que traduce y sintetiza
+/// (con stdout redirigido) y devuelve (código, stdout, stderr normalizado). Con
+/// `json` añade `--json`. Reproduce de verdad, así que exige salida de audio.
+fn say_against_fake_daemon(tag: &str, json: bool) -> (i32, String, String) {
+    require_output_device();
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+        serde_json::json!({ "event": "progress", "stage": "translate" }),
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+        silent_audio_event(1),
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result", "translated": "Hello" }),
+    ]);
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut args = vec![
+        "speech",
+        "say",
+        "--daemon",
+        "--text",
+        "Hola",
+        "--source-language",
+        "es",
+        "--target-language",
+        "en",
+    ];
+    if json {
+        args.insert(0, "--json");
+    }
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    (code, stdout, normalize_times(&stderr, dir))
+}
+
+/// `speech say` por daemon con traducción pinta `Texto → Voz`, deja
+/// `Síntesis` y `Reproducción` solapadas con una sola medida del primer audio,
+/// muestra la traducción y emite `reproduced` con `translated` y el contexto; el
+/// stderr es el mismo con y sin `--json`.
+#[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
+fn say_daemon_renders_phases_and_keeps_stderr_with_json() {
+    let (code, _stdout, text_stderr) = say_against_fake_daemon("say-phases-text", false);
+    assert_eq!(code, 0, "{text_stderr}");
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines[0], "Lectura en voz alta es → en · voz default · daemon",
+        "{text_stderr}"
+    );
+    assert_eq!(lines[1], "Texto → Voz", "{text_stderr}");
+    for expected in [
+        "Texto",
+        "  [1/3] ✓ Traducción",
+        "Voz · streaming",
+        "  [2/3] ✓ Síntesis",
+        "  [3/3] ✓ Reproducción",
+        "✓ Reproducción completada en <t> · primer audio <t>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{text_stderr}"
+        );
+    }
+    assert!(
+        text_stderr.contains("· primer audio <t>") && text_stderr.contains("· en paralelo"),
+        "la síntesis lleva el primer audio y la reproducción el paralelismo: {text_stderr}"
+    );
+
+    let (code, json_stdout, json_stderr) = say_against_fake_daemon("say-phases-json", true);
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["status"], "reproduced", "{envelope}");
+    assert_eq!(envelope["translated"], "Hello", "{envelope}");
+    assert_eq!(envelope["context"]["route"], "daemon", "{envelope}");
+    assert!(envelope["first_audio_ms"].is_u64(), "{envelope}");
+    assert_eq!(envelope["stalls"], 0, "{envelope}");
+    let stages = envelope["stages"].as_array().expect("stages es una lista");
+    let numbered: Vec<&str> = stages
+        .iter()
+        .filter(|stage| stage["transient"] != true)
+        .map(|stage| stage["stage"].as_str().expect("stage"))
+        .collect();
+    assert_eq!(
+        numbered,
+        ["translating", "synthesizing", "playing"],
+        "{envelope}"
+    );
+}
+
+/// Ejecuta `speech dub --daemon` sobre un WAV de silencio contra un daemon falso
+/// con traducción, con stdout redirigido, y devuelve (código, stdout, stderr
+/// normalizado). Reproduce de verdad, así que exige salida de audio.
+fn dub_against_fake_daemon_events(tag: &str, json: bool) -> (i32, String, String) {
+    require_output_device();
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "text_length": 4 }),
+        serde_json::json!({ "event": "progress", "stage": "transcribe" }),
+        serde_json::json!({ "event": "transcript", "text": "hola" }),
+        serde_json::json!({ "event": "progress", "stage": "translate" }),
+        serde_json::json!({ "event": "translation", "text": "hello" }),
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+        silent_audio_event(1),
+        serde_json::json!({
+            "event": "result", "status": "dubbed",
+            "text": "hola", "translated": "hello", "voice": "default", "work_ms": 5,
+        }),
+    ]);
+    fake.publish_in(&dir.join("data"));
+    let wav = dir.join("entrevista.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut args = vec![
+        "speech",
+        "dub",
+        "--daemon",
+        "--audio",
+        wav.to_str().expect("ruta UTF-8"),
+        "--source-language",
+        "es",
+        "--target-language",
+        "en",
+    ];
+    if json {
+        args.insert(0, "--json");
+    }
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    (code, stdout, normalize_times(&stderr, dir))
+}
+
+/// `speech dub` por daemon pinta `Entrada → Texto → Voz`, deja cada texto bajo su
+/// etapa en cuanto llega su evento y emite `dubbed` con contexto y etapas; el
+/// stderr es el mismo con y sin `--json`.
+#[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
+fn dub_daemon_renders_phases_and_keeps_stderr_with_json() {
+    let (code, stdout, text_stderr) = dub_against_fake_daemon_events("dub-phases-text", false);
+    assert_eq!(code, 0, "{text_stderr}");
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines[0], "Doblaje es → en · voz default · archivo entrevista.wav · daemon",
+        "{text_stderr}"
+    );
+    assert_eq!(lines[1], "Entrada → Texto → Voz", "{text_stderr}");
+    for expected in [
+        "Entrada",
+        "  [1/5] ✓ Lectura",
+        "Texto",
+        "  [2/5] ✓ Transcripción",
+        "        │ Transcripción: hola",
+        "  [3/5] ✓ Traducción",
+        "        │ Traducción: hello",
+        "Voz · streaming",
+        "  [4/5] ✓ Síntesis",
+        "  [5/5] ✓ Reproducción",
+        "✓ Doblaje completado en <t> · primer audio <t>",
+        "  Entrada <t> · Texto <t> · Voz <t>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{text_stderr}"
+        );
+    }
+    assert!(
+        stdout.contains("Transcripción: hola") && stdout.contains("Traducción: hello"),
+        "textos etiquetados por stdout: {stdout}"
+    );
+
+    let (code, json_stdout, json_stderr) = dub_against_fake_daemon_events("dub-phases-json", true);
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["status"], "dubbed", "{envelope}");
+    assert_eq!(envelope["text"], "hola", "{envelope}");
+    assert_eq!(envelope["translated"], "hello", "{envelope}");
+    assert!(envelope["first_audio_ms"].is_u64(), "{envelope}");
+    assert_eq!(envelope["context"]["input"], "file", "{envelope}");
+    assert_eq!(envelope["context"]["file"], "entrevista.wav", "{envelope}");
+    assert_eq!(envelope["context"]["voice"], "default", "{envelope}");
+    let numbered: Vec<&str> = envelope["stages"]
+        .as_array()
+        .expect("stages es una lista")
+        .iter()
+        .filter(|stage| stage["transient"] != true)
+        .map(|stage| stage["stage"].as_str().expect("stage"))
+        .collect();
+    assert_eq!(
+        numbered,
+        [
+            "reading",
+            "transcribing",
+            "translating",
+            "synthesizing",
+            "playing"
+        ],
+        "{envelope}"
     );
 }
