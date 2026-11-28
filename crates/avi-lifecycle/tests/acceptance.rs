@@ -396,7 +396,7 @@ fn stages_since(after: u64) -> Vec<(&'static str, Option<String>)> {
 
 /// **La etapa del `PATH` dice el estado una vez, como nota, y solo si lo escribió.**
 ///
-/// El estado del `PATH` ya no es una línea de un resumen final sino la nota de la etapa
+/// El estado del `PATH` es la nota de la etapa
 /// `Integración en el PATH`. Afirma los **tres** estados posibles: esta pasada reescribió
 /// el `PATH` (la nota dice `se añadió <dir>` y sale el aviso a las terminales ya
 /// abiertas), la integración ya estaba en pie (etapa sin nota y sin aviso) y

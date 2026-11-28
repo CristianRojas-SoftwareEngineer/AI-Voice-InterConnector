@@ -15,7 +15,7 @@
 //!
 //! **La detección del target del sistema operativo no se replica aquí.**
 //! La tabla de `uname -m`, `AMD64` y `sysctl hw.optional.arm64` describe el
-//! bootstrap de release, que vive en `packaging/bootstrap/`, y hoy solo
+//! bootstrap de release, que vive en `packaging/bootstrap/`, y solo
 //! se compila para los targets de la tabla: el binario ya sabe con qué triple
 //! se construyó, así que preguntar por la máquina sería una segunda fuente que
 //! puede discrepar. Lo que este módulo rechaza es un binario compilado para un
@@ -94,8 +94,7 @@ fn unsupported(triple: &str) -> LifecycleError {
 /// la convención de la tabla de targets:
 /// `ai-voice-interconnector-<ver>-<arch>-<os>.<ext>`.
 ///
-/// Es la convención de los cuatro jobs de build de `.circleci/config.yml`, que
-/// es donde vive hoy. La consumen `self update` y
+/// Es la convención de los cuatro jobs de build de `.circleci/config.yml`. La consumen `self update` y
 /// `cargo xtask package`; el bootstrap la busca con
 /// el mismo criterio.
 pub fn release_asset_name(triple: &str, version: &str) -> Result<String, LifecycleError> {

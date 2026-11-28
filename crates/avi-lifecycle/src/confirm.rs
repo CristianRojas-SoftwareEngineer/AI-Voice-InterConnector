@@ -6,10 +6,9 @@
 
 //! Confirmación de las operaciones de ciclo de vida.
 //!
-//! La tabla de confirmaciones tiene cuatro celdas, y las cuatro importan porque el
-//! defecto que corrigen es que **sin terminal se borra en silencio**: hoy la
-//! confirmación solo se pide cuando hay TTY, así que un `cleanup` sin terminal
-//! borra sin preguntar. Aquí la ausencia de terminal es un dato explícito, no una
+//! La tabla de confirmaciones tiene cuatro celdas, y las cuatro importan porque
+//! **sin terminal no se borra en silencio**: una operación destructiva sin
+//! terminal exige `--yes`. La ausencia de terminal es un dato explícito, no una
 //! señal de que se pueda pasar, y el predicado se inyecta para que las pruebas
 //! puedan ejercitar las cuatro celdas sin un terminal real.
 //!

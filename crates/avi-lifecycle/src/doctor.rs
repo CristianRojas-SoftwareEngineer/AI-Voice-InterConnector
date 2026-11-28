@@ -19,16 +19,12 @@
 //! `exit`: hay una función que devuelve el reporte, serializable, con su veredicto
 //! dentro.
 //!
-//! **Las claves que se retiran.** El contrato niega cuatro claves de primer nivel del
-//! reporte —la ruta de la caché, la del directorio de datos, el estado del modelo de
-//! clonado y la lista de problemas— y el envelope las cubre con `install`, `path` y
-//! `models`. Aquí no se emiten, **ni siquiera como nombre**: la prueba de este módulo
-//! afirma el **conjunto exacto** de claves del envelope en vez de una lista de
-//! prohibidas, que es una afirmación más fuerte y no necesita nombrarlas. La
-//! información no se pierde, cambia de sitio: la raíz de datos es el campo `data_dir` de
-//! `install`, el estado del modelo de clonado es una entrada más de `provisioned` o de
-//! `missing` en `models`, y las comprobaciones que eran la lista de problemas son
-//! `checks` y `failed`.
+//! **Forma del reporte.** Las claves de primer nivel son exactamente `version`,
+//! `target`, `channel`, `install`, `path`, `pending`, `models`, `checks` y `failed`, y
+//! la prueba de este módulo afirma ese **conjunto exacto**. La raíz de datos es el
+//! campo `data_dir` de `install`, el estado del modelo de clonado es una entrada más de
+//! `provisioned` o de `missing` en `models`, y las comprobaciones y su lista de fallos
+//! son `checks` y `failed`.
 //!
 //! **Recuperación en modo informe.** La regla dice que `doctor` ejecuta la recuperación
 //! al
@@ -813,7 +809,6 @@ mod tests {
         }
         assert_eq!(keys.len(), expected.len(), "y no hay más: {keys:?}");
 
-        // La información que las claves retiradas tenían no se pierde: cambia de sitio.
         // La cabecera es la versión del producto que recibe el reporte, no la del
         // crate de librería donde se compila.
         assert_eq!(report.version, "0.24.0");

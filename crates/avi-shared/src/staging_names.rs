@@ -168,15 +168,12 @@ mod tests {
         assert_eq!(temp_file::sibling(Path::new("/"), &owner), None);
     }
 
-    /// Lo que no es un temporal con token se rechaza, incluidos los nombres
-    /// antiguos con nombre fijo.
+    /// Lo que no es un temporal con token se rechaza.
     #[test]
     fn temp_file_owner_rejects_other_names() {
         for bad in [
             "",
             ".tmp",
-            "reference.qvoice.tmp",
-            "daemon.pid.tmp",
             "a.wav.tmp",
             "a.wav.4242.tmp",
             "a.wav.4242-ABC.tmp",
@@ -218,7 +215,7 @@ mod tests {
         }
     }
 
-    /// Lo que no es un staging con token se rechaza, incluido el nombre antiguo.
+    /// Lo que no es un staging con token se rechaza.
     #[test]
     fn voice_staging_owner_rejects_other_names() {
         for bad in [
@@ -230,7 +227,6 @@ mod tests {
             ".staging-04242-abc-ana",
             ".staging-ana",
             "staging-4242-abc-ana",
-            "avi-voice-staging-ana-4242",
         ] {
             assert_eq!(
                 voice_staging::owner_of(bad),

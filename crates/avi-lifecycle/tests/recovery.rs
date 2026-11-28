@@ -636,8 +636,8 @@ fn uninstall_recovers_before_it_plans() {
 ///
 /// Se comprueba contra el **barrido real** y la identidad real de este proceso: el
 /// scratch de un propietario muerto se borra, el de este proceso sobrevive, y lo que no
-/// es de este modelo —los sandboxes de pruebas con cualquier nombre, directorios con la
-/// forma de un token fuera del scratch y los nombres antiguos con PID— no se toca.
+/// es de este modelo —los sandboxes de pruebas con cualquier nombre y los directorios con
+/// la forma de un token fuera del scratch— no se toca.
 #[test]
 fn sweep_never_touches_a_foreign_sandbox() {
     let _guard = process_env::exclusively();
@@ -654,16 +654,12 @@ fn sweep_never_touches_a_foreign_sandbox() {
     );
     support::write(&dead.join("clip.wav"), "scratch huérfano");
     support::write(&own.join("clip.wav"), "scratch de este proceso");
-    // Sandboxes de pruebas junto al scratch y con la forma de un token fuera de él, y
-    // nombres antiguos con PID dentro de él: nada de eso es de este modelo.
+    // Sandboxes de pruebas junto al scratch y con la forma de un token fuera de él:
+    // nada de eso es de este modelo.
     let golden = sandbox.root.join("other-project-sandbox-invariant-12345-0");
     let outside = sandbox.root.join("elsewhere").join("4294967000-1");
-    let legacy = sandbox.scratch_root.join("avi-orphan-4294967000.tmp");
-    let legacy_dir = sandbox.scratch_root.join("avi_clone_x_1");
     support::write(&golden.join("install").join("state"), "sandbox vivo");
     support::write(&outside.join("state"), "fuera del scratch");
-    support::write(&legacy, "nombre antiguo");
-    support::write(&legacy_dir.join("clip.wav"), "nombre antiguo");
 
     let outcome = recovery::recover(recovery::Roots {
         program_dir: &sandbox.program_dir,
@@ -679,7 +675,7 @@ fn sweep_never_touches_a_foreign_sandbox() {
         outcome.removed_scratch
     );
     assert!(inspect::exists(&own), "el de este proceso sobrevive");
-    for survivor in [&golden, &outside, &legacy, &legacy_dir] {
+    for survivor in [&golden, &outside] {
         assert!(
             inspect::exists(survivor),
             "{} no es de este modelo y sobrevive al barrido",

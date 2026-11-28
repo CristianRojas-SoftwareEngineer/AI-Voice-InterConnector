@@ -14,12 +14,12 @@ use std::sync::atomic::Ordering;
 /// Retirar o renombrar una clave del envelope, o cambiar su significado, obliga a
 /// subir la versión; añadir una clave nueva no.
 ///
-/// La versión 7 es un cambio incompatible: todo envelope lleva ahora las claves
+/// La versión 7 define el envelope vigente: todo envelope lleva las claves
 /// comunes `context`, `total_ms`, `stages` y `warnings` (desde el registro de
-/// ejecución), `speech synthesize` emite `status: "synthesized"` en vez de
-/// `success` y `speech transcribe` emite `status: "transcribed"`, `speech denoise
-/// --json` emite un único envelope en vez de líneas JSON por evento, y el
-/// envelope de error añade el contexto y las etapas a `error` y `reason`.
+/// ejecución), `speech synthesize` emite `status: "synthesized"`, `speech
+/// transcribe` emite `status: "transcribed"`, `speech denoise --json` emite un
+/// único envelope y el envelope de error lleva el contexto y las etapas junto a
+/// `error` y `reason`.
 pub const CLI_SCHEMA_VERSION: &str = "7";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`); el
@@ -29,8 +29,8 @@ pub const CLI_SCHEMA_VERSION: &str = "7";
 /// cambios incompatibles, con la misma regla: retirar o renombrar una clave, o
 /// cambiar su significado, obliga a subirla; añadir una clave nueva no.
 ///
-/// La versión 8 es un cambio incompatible: `/transcribe` responde con un stream
-/// NDJSON (`started`, `progress`, `result` o `error`) en vez de un JSON único.
+/// En la versión 8, `/transcribe` responde con un stream NDJSON (`started`,
+/// `progress`, `result` o `error`).
 pub const DAEMON_SCHEMA_VERSION: &str = "8";
 
 /// Inserta `schema_version` en un objeto JSON sin imprimirlo.
