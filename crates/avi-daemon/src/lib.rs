@@ -4494,7 +4494,7 @@ mod tests {
         );
     }
 
-    /// D1: rechaza PCM16 de longitud impar antes de chunks_exact(2).
+    /// transcribe rechaza PCM16 de longitud impar antes de chunks_exact(2).
     #[test]
     fn validate_transcribe_rejects_odd_pcm() {
         for b64 in ["AQ==", "AQID"] {
@@ -4507,7 +4507,7 @@ mod tests {
         }
     }
 
-    /// D1: acepta PCM16 de longitud par y preserva el orden de las muestras.
+    /// transcribe acepta PCM16 de longitud par y preserva el orden de las muestras.
     #[test]
     fn validate_transcribe_accepts_even_pcm_preserves_order() {
         let pcm = validate_transcribe_input(&json!({ "audio_b64": "AQA=" })).unwrap();
@@ -4517,7 +4517,7 @@ mod tests {
         assert_eq!(pcm, vec![1i16, 2i16]);
     }
 
-    /// D2: dub rechaza PCM16 de longitud impar.
+    /// dub rechaza PCM16 de longitud impar.
     #[tokio::test]
     async fn dub_rejects_odd_pcm() {
         let (status, _) = post_json(
@@ -4528,7 +4528,7 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    /// D2: dub rechaza un cuerpo que supera el límite derivado de su duración
+    /// dub rechaza un cuerpo que supera el límite derivado de su duración
     /// máxima (DefaultBodyLimit del router).
     #[tokio::test]
     async fn dub_rejects_body_over_limit() {
@@ -4543,7 +4543,7 @@ mod tests {
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    /// D2: dub acepta un audio de la duración máxima sin que el body limit lo
+    /// dub acepta un audio de la duración máxima sin que el body limit lo
     /// rechace.
     #[tokio::test]
     async fn dub_accepts_audio_at_the_duration_limit() {
@@ -4641,7 +4641,7 @@ mod tests {
         assert_eq!(tree_of(dir.path()), before, "ningún almacén cambió");
     }
 
-    /// D3: clone rechaza WAV inválido antes de crear el directorio temporal.
+    /// clone rechaza WAV inválido antes de crear el directorio temporal.
     #[tokio::test]
     async fn clone_rejects_invalid_wav_before_temp() {
         use base64::Engine;
@@ -4655,7 +4655,7 @@ mod tests {
         assert_eq!(body["reason"], "invalid_audio");
     }
 
-    /// D3: clone rechaza WAV que supera 30 s de referencia.
+    /// clone rechaza WAV que supera 30 s de referencia.
     #[tokio::test]
     async fn clone_rejects_wav_over_30s() {
         use base64::Engine;
@@ -4671,7 +4671,7 @@ mod tests {
         assert_eq!(body["reason"], "audio_too_long");
     }
 
-    /// D3: clone acepta WAV válido por debajo del límite (no es 400).
+    /// clone acepta WAV válido por debajo del límite (no es 400).
     #[tokio::test]
     async fn clone_accepts_valid_wav_under_limit() {
         use base64::Engine;

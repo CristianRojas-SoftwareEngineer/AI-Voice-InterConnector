@@ -11367,7 +11367,7 @@ fn synthesize_daemon_renders_phases_and_keeps_stderr_with_json() {
         ],
         "{envelope}"
     );
-    // D4: `Guardado` está cerrado antes de emitir el envelope, con fin posterior
+    // `Guardado` está cerrado antes de emitir el envelope, con fin posterior
     // a su inicio, y `Síntesis` y `Guardado` no se solapan.
     let saving = stages
         .iter()

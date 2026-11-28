@@ -1696,7 +1696,7 @@ mod tests {
         assert!(!plain.captured().contains("Grabando 0:05"));
     }
 
-    /// D1: tras el eco de un Enter el indicador sube una línea antes de borrar,
+    /// Tras el eco de un Enter el indicador sube una línea antes de borrar,
     /// con y sin modo máquina; sin terminal no escribe nada.
     #[test]
     fn climb_echoed_enter_moves_up_before_clearing_in_every_mode() {
