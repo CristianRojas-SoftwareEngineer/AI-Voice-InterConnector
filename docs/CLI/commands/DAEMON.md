@@ -64,9 +64,9 @@ El constructor de producción exige los cinco modelos obligatorios antes de carg
 |---|---|---|---|---|
 | `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version` | Readiness + warmup (7 rutas) |
 | `/synthesize` | POST | `{text, voice, source_language, target_language, temperature?, seed?}` | NDJSON `started → progress{queued\|warming\|synthesis} → heartbeat → [progress{synthesis}] → [progress{loading_voice} → progress{synthesis}] → audio{pcm_b64}… (intercalados con heartbeat) → result{translated, work_ms}` o `error`; si los idiomas difieren, traduce fuera del runtime bajo la etapa `translate` (anunciada con `progress` y seguida de latidos) y entra después en la fase de síntesis, que emite de inmediato `progress` con la etapa real (`synthesis`, `queued` o `warming`) y `loading_voice` si arranca un residente; antes del stream, 400 `invalid_voice_name` si `voice` está vacío, tiene caracteres fuera de `[A-Za-z0-9._-]` o es `.` o `..` | Entrega en streaming: el audio (PCM s16le, 24 kHz, mono) llega en eventos `audio` según el motor lo genera; un fallo a mitad emite `error` tras los `audio` ya enviados |
-| `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` + `schema_version`; error con `{status:"error", reason, message}`: 400 (`usage_error` sin audio, `invalid_audio` si el base64 no es válido, `audio_too_long` si las muestras superan `MAX_TRANSCRIBE_AUDIO_SECS`, `empty_transcript` si el motor no reconoce voz en el audio), 413 (cuerpo mayor que el tope derivado de ese límite) o 500 (`transcription_failed`, con `message` «No se pudo transcribir el audio.»; la causa técnica queda en el registro del daemon, no en la respuesta) | Transcripción Parakeet (feature `native-stt`) |
+| `/transcribe` | POST | `{audio_b64, source_language, denoise?}` | NDJSON `started → heartbeat/progress → [denoise_queue → denoise] → transcribe → result{text, source_language}` o `error`; los errores baratos son JSON `{status:"error", reason, message}` con código HTTP antes de que empiece el stream: 400 (`usage_error` sin audio, `invalid_audio` si el base64 no es válido, `audio_too_long` si las muestras superan `MAX_TRANSCRIBE_AUDIO_SECS`) o 413 (cuerpo mayor que el tope derivado de ese límite); un fallo dentro del stream (`empty_transcript` si el motor no reconoce voz en el audio, `transcription_failed` con `message` «No se pudo transcribir el audio.», con la causa técnica solo en el registro del daemon) llega como evento `error` | Transcripción Parakeet (feature `native-stt`) con streaming NDJSON |
 | `/translate` | POST | `{text, source_language, target_language}` | `{translated, source_language, target_language}` o `error` | Traducción CT2 residente (feature `native-translation`) |
-| `/voices/clone` | POST | `{name, audio_b64, force?}` (con `force`, reemplaza la voz y sus audios sintetizados) | NDJSON `started → heartbeat/progress → result{name, speech, precomputed:true, removed_speech}` o `error`; antes del stream, 400 `invalid_voice_name` si `name` no es un nombre de voz válido (también `.` o `..`), 400 `audio_too_long` si la referencia supera `MAX_CLONE_REFERENCE_SECS` y 413 si el cuerpo supera el tope derivado de ese límite (topes en `crates/avi-core/src/limits.rs`) | Clonar voz (audio base64) con streaming NDJSON y warm-on-clone: la precarga sigue en segundo plano tras el `result`, no se anuncia como etapa y `precomputed:true` significa «precarga iniciada» |
+| `/voices/clone` | POST | `{name, audio_b64, force?, denoise?}` (con `force`, reemplaza la voz y sus audios sintetizados; con `denoise`, limpia el ruido de la referencia antes de clonar) | NDJSON `started → heartbeat/progress → [progress{denoise}] → progress{save} → result{name, speech, precomputed:true, removed_speech}` o `error`; antes del stream, 400 `invalid_voice_name` si `name` no es un nombre de voz válido (también `.` o `..`), 400 `audio_too_long` si la referencia supera `MAX_CLONE_REFERENCE_SECS` y 413 si el cuerpo supera el tope derivado de ese límite (topes en `crates/avi-core/src/limits.rs`) | Clonar voz (audio base64) con streaming NDJSON y warm-on-clone: la precarga sigue en segundo plano tras el `result`, no se anuncia como etapa y `precomputed:true` significa «precarga iniciada» |
 | `/dub` | POST | `{audio_b64, voice, source_language, target_language, temperature?}` | NDJSON `started → heartbeat/progress → transcript{text} → [translation{text}] → audio{pcm_b64}… → result{status:"dubbed", text, translated, voice, work_ms}` o `error` (`transcript` y `translation` llevan solo `event`, `text` y `schema_version`; `translation` solo sale si los idiomas difieren); antes del stream, 400 `invalid_voice_name` si `voice` no es un nombre de voz válido (también `.` o `..`) | Pipeline transcribe→translate→synthesize con streaming NDJSON |
 | `/shutdown` | POST | — | `{status:"shutting_down"}` | `shutdown_handler`: mata el árbol del residente por PID solo si su identidad observada coincide con la registrada y espera su muerte, y `notify_one()` para cierre graceful sin `process::exit` |
 
@@ -74,16 +74,16 @@ El constructor de producción exige los cinco modelos obligatorios antes de carg
 
 ## Protocolo
 
-- `synthesize`, `voices/clone` y `dub`: NDJSON `application/x-ndjson` con `schema_version` y latidos periódicos (`STREAM_HEARTBEAT`). `synthesize` y `dub` emiten además un evento `audio` por fragmento de la entrega en streaming del motor, `{event:"audio", pcm_b64}` con PCM s16le de 24 kHz mono en base64; el `result` ya no lleva el audio. La versión del protocolo es la `7`.
-- **Los eventos no llevan texto humano.** `started` conserva solo los datos de la petición (`voice` y `text_length` en `/synthesize`, `name` en `/voices/clone`, `voice` en `/dub`), `heartbeat` y `progress` llevan únicamente `event` y `stage`, y `result`/`error` cierran el stream (el `error` sí lleva `reason` y `message`). Los dos eventos de texto de `/dub`, `transcript` y `translation`, llevan exactamente `event`, `text` y `schema_version`: `text` es contenido del usuario (la transcripción y el texto traducido), no texto de interfaz, y el cliente lo imprime por stdout en cuanto llega, antes de que suene el audio. Son eventos nuevos y no suben `DAEMON_SCHEMA_VERSION` (solo retirar, renombrar o cambiar el significado de una clave la sube); un cliente que no los conozca los ignora. El cliente es el dueño de todos los textos de interfaz: traduce cada `stage` a una etapa de su catálogo. `/transcribe` y `/translate` siguen siendo JSON plano.
-- **El mapa de etapas.** El daemon emite nueve `stage` distintos: `warming` (calentando motor de síntesis), `queued` (en cola de síntesis), `loading_voice` (el motor arranca el residente de la voz pedida), `denoise_queue` (esperando turno para limpiar el ruido), `denoise` (limpiando ruido del audio), `synthesis` (sintetizando voz), `clone` (clonando voz), `transcribe` (transcribiendo audio) y `translate` (traduciendo texto). Cada etapa pesada se anuncia con un evento `progress` al empezar; mientras el trabajo continua, el daemon emite eventos `heartbeat` cada ~500 ms con la etapa vigente. La fase de síntesis emite de inmediato `queued`, `warming` o `synthesis` según el lock y el estado del motor, `synthesis` al obtener el lock tras esperar, y `loading_voice` seguido de `synthesis` si el motor arranca un residente. La CLI traduce `warming`, `queued`, `loading_voice` y `synthesis` a la misma etapa de síntesis con distinto texto vivo (`Calentando el motor…`, `Esperando turno para sintetizar…`, `Cargando la voz…`, `Sintetizando…`) y un solo reloj. `/voices/clone` no emite etapa de precarga. Un `stage` fuera de esa lista se ignora: no se anuncia con un texto genérico que confunda una etapa con otra. La etapa se anuncia una vez sin terminal —la actividad repetida dentro de la misma etapa no abre línea nueva— y la línea de la etapa en curso se repinta en la terminal.
+- `synthesize`, `voices/clone`, `dub` y `transcribe`: NDJSON `application/x-ndjson` con `schema_version` y latidos periódicos (`STREAM_HEARTBEAT`). `synthesize` y `dub` emiten además un evento `audio` por fragmento de la entrega en streaming del motor, `{event:"audio", pcm_b64}` con PCM s16le de 24 kHz mono en base64; el `result` no lleva el audio. La versión del protocolo es la `8`: toda respuesta del daemon, en stream o en JSON, lleva la cabecera `x-schema-version` con ese valor, y la CLI rechaza a un daemon que anuncie otra con `daemon_version_mismatch` (exit 5), que se resuelve con `daemon restart`.
+- **Los eventos no llevan texto humano.** `started` conserva solo los datos de la petición (`voice` y `text_length` en `/synthesize`, `name` en `/voices/clone`, `voice` en `/dub`), `heartbeat` y `progress` llevan únicamente `event` y `stage`, y `result`/`error` cierran el stream (el `error` sí lleva `reason` y `message`). Los dos eventos de texto de `/dub`, `transcript` y `translation`, llevan exactamente `event`, `text` y `schema_version`: `text` es contenido del usuario (la transcripción y el texto traducido), no texto de interfaz, y el cliente lo imprime por stdout en cuanto llega, antes de que suene el audio. Solo retirar, renombrar o cambiar el significado de una clave sube `DAEMON_SCHEMA_VERSION`; un cliente que no conozca un evento añadido lo ignora. El cliente es el dueño de todos los textos de interfaz: traduce cada `stage` a una etapa de su catálogo. `/translate` sigue siendo JSON plano; el `result` de `/transcribe` lleva `text` y `source_language`.
+- **El mapa de etapas.** El daemon emite diez `stage` distintos: `warming` (calentando motor de síntesis), `queued` (en cola de síntesis), `loading_voice` (el motor arranca el residente de la voz pedida), `denoise_queue` (esperando turno para limpiar el ruido), `denoise` (limpiando ruido del audio), `synthesis` (sintetizando voz), `clone` (clonando voz), `save` (guardando la voz clonada), `transcribe` (transcribiendo audio) y `translate` (traduciendo texto). Cada etapa pesada se anuncia con un evento `progress` al empezar; mientras el trabajo continua, el daemon emite eventos `heartbeat` cada ~500 ms con la etapa vigente. La fase de síntesis emite de inmediato `queued`, `warming` o `synthesis` según el lock y el estado del motor, `synthesis` al obtener el lock tras esperar, y `loading_voice` seguido de `synthesis` si el motor arranca un residente. La CLI traduce `warming`, `queued`, `loading_voice` y `synthesis` a la misma etapa de síntesis con distinto texto vivo (`Calentando el motor…`, `Esperando turno para sintetizar…`, `Cargando la voz…`, `Sintetizando…`) y un solo reloj. `/voices/clone` emite `denoise` (si se pidió) y `save` antes del `result`, pero no emite etapa de precarga. Un `stage` fuera de esa lista se ignora: no se anuncia con un texto genérico que confunda una etapa con otra. La etapa se anuncia una vez sin terminal —la actividad repetida dentro de la misma etapa no abre línea nueva— y la línea de la etapa en curso se repinta en la terminal.
 - `transcribe`: PCM `i16le 16kHz mono` base64 en `audio_b64`.
 - `health_body` (función interna del daemon): `Warming → Warm → Failed(causa)`; `warm_error` solo si `Failed`. `GET /health` puede incluir `ct2`/`stt` aditivas `warm/warming/warm_failed` cuando residentes, sin bump `schema_version`. Esta máquina de estados la escriben los warmups (de arranque y de clonado: `Warming` al empezar el testigo, `Warm` o `Failed` al terminar) y cada síntesis completada, que la devuelve a `Warm`; no refleja una degradación del residente posterior a la última síntesis. La salud de síntesis se observa *por petición* (antes de reutilizar el residente en la síntesis TTS del módulo de audio) y puede detectar un residente degradado aunque `warm` siga en `Warm`.
 - `translate`/`dub` (etapa de traducción) exigen el modelo de traducción provisionado vía `is_provisioned` (cada fichero de `MODEL_FILE_PATTERNS` presente y de más de 0 bytes); sin él responden `model_missing` (exit 4 en CLI).
 
 ## Gestión del ciclo de vida
 
-**El progreso por stderr.** `daemon start`, `stop` y `restart` abren con la línea de contexto `Daemon · <host:puerto>`, pintan sus etapas por stderr (`stopping`, `starting`, `warming`) y ceden la línea antes de que el producto escriba el aviso de daemon residual (`Aviso: El daemon que estaba en marcha no respondía bien; se detiene y se arranca de nuevo.`). Cada etapa del arranque se abre cuando ocurre su trabajo: `starting` («Iniciando el daemon…») dura lo que dura el arranque real —el proceso, la publicación de su dirección y la respuesta de `/health`— y deja `✓ Daemon iniciado  <duración>`; `warming` («Calentando el motor…») empieza solo después, cuando el daemon ya responde, y se cierra como `Motor calentado` cuando `/health` informa el motor como `warm`, la misma condición con la que `daemon status` dice «motor listo». La espera del calentamiento es de hasta 10 s contados desde que el daemon responde. Si el calentamiento falla o no termina en ese plazo, el daemon sigue en marcha, la etapa `warming` no queda escrita y no hay aviso suelto: el propio cierre lo dice en una línea. Solo en modo máquina (`--json`), donde no hay cierre, se conserva el aviso por stderr. Ningún comando de ciclo de vida del daemon escribe resultados por stdout: el cierre va por stderr y lo dice **una sola vez**, con la duración de la operación. `daemon start` cierra con `✓ Daemon listo en <total> · pid N` con el motor listo; con el calentamiento sin terminar, `✓ Daemon en marcha en <total> · pid N · el motor sigue calentándose; ai-voice-interconnector daemon status dirá cuándo está listo`; con el calentamiento fallido, `✓ Daemon en marcha en <total> · pid N · falló el calentamiento del motor; consulta ai-voice-interconnector daemon status`; y `✓ El daemon ya estaba en marcha · pid N` si ya lo estaba. `daemon restart` cierra con `✓ Daemon reiniciado en <total> · pid N` en los tres casos y los mismos extras. `daemon stop` cierra con `✓ Daemon detenido en <total>` (o `✓ No había ningún daemon en marcha.` —porque, sin daemon en marcha, decir que se detuvo algo sería mentir—). `daemon status` es la excepción: su línea de estado es un resultado y va por stdout.
+**El progreso por stderr.** `daemon start`, `stop` y `restart` abren con la línea de contexto `Daemon · <host:puerto>`, pintan sus etapas por stderr y escriben lo mismo con y sin `--json`: `--json` solo cambia stdout. Las etapas son `Parada del daemon` (`stopping`), `Arranque` (`starting`) y `Calentamiento` (`warming`), numeradas `[n/N]` cuando hay dos o más. `daemon start` solo tiene `Parada` si encuentra un daemon degradado: lo detiene, escribe bajo esa etapa el aviso `⚠ El daemon que estaba en marcha no respondía bien; se detiene y se arranca de nuevo.` y sigue con el arranque. Cada etapa del arranque se abre cuando ocurre su trabajo: `Arranque` («Iniciando el daemon…») dura lo que dura el arranque real —el proceso, la publicación de su dirección y la respuesta de `/health`—; `Calentamiento` («Calentando el motor…») empieza solo después, cuando el daemon ya responde, y se cierra cuando `/health` informa el motor como `warm`, la misma condición con la que `daemon status` dice «motor listo». La espera del calentamiento es de hasta 10 s contados desde que el daemon responde. Si el calentamiento falla o no termina en ese plazo, el daemon sigue en marcha, la etapa queda como `○ Calentamiento · sigue calentándose` (o `· falló el calentamiento`) con un `⚠` debajo («El daemon está en marcha, pero el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo.» o «El daemon está en marcha, pero falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`.»), y el cierre pasa de `Daemon listo` a `Daemon en marcha`. Ningún comando de ciclo de vida del daemon escribe resultados por stdout: el cierre va por stderr y lo dice **una sola vez**, con la duración de la operación. `daemon start` cierra con `✓ Daemon listo en <total> · pid N` con el motor listo, `✓ Daemon en marcha en <total> · pid N` con el calentamiento sin terminar o fallido, y `✓ El daemon ya estaba en marcha · pid N` (sin etapas) si ya lo estaba. `daemon restart` comprueba antes de parar que el modelo está provisionado; sus etapas son `Parada del daemon`, `Arranque` y `Calentamiento` en dos fases (`Parada → Arranque`), y sin daemon en marcha la primera queda como `○ Parada del daemon · no había ningún daemon en marcha`; cierra con `✓ Daemon reiniciado en <total> · pid N` y el desglose por fase. `daemon stop` tiene una sola etapa, así que no escribe su línea: el cierre es `✓ Daemon detenido en <total>`, o `✓ No había ningún daemon en marcha.` sin etapa —porque, sin daemon en marcha, decir que se detuvo algo sería mentir—. Si la parada no concluye, `stop` muestra `✗ Parada del daemon`, el separador y el `Error:` con su `Solución:`. `daemon status` es la excepción: su línea de estado es un resultado y va por stdout.
 
 `AVI_NO_PROGRESS=1` silencia solo las etapas por stderr: la línea de contexto, el cierre, el envelope `--json` y los códigos de salida no cambian.
 
@@ -100,17 +100,41 @@ sistema— con salida 0. Si la parada no concluye, el `status` es `still_running
 con `daemon: "running"` y el veredicto completo (`was_running`,
 `daemon_fully_stopped: false`, `resident_alive`, `pid`, `remaining`), con salida
 5 por veredicto y sin objeto `error`: quien automatiza distingue «sigue el árbol»
-de «solo quedó el residente» sin leer el texto humano. El texto humano es «Señal
-de apagado enviada», «No había daemon que detener (N s).» o el mensaje de deadline
-con el matiz del residente, según el mismo dato. El envelope de `stop` bindea el veredicto del motor (`StopOutcome`, calculado antes de tocar nada): una firma `shutdown_sent` sin daemon previo no es un veredicto válido.
+de «solo quedó el residente» sin leer el texto humano. El texto humano es el cierre
+`✓ Daemon detenido en <total>`, `✓ No había ningún daemon en marcha.` o, con el
+veredicto `still_running`, un `Error:` con el matiz del residente, según el mismo
+dato. Con un daemon detenido el envelope lleva `context` (`addr`), `total_ms`,
+`stages` (la etapa `stopping`) y `warnings`; con `not_running` lleva solo `context`,
+sin etapas. El envelope de `stop` bindea el veredicto del motor (`StopOutcome`, calculado antes de tocar nada): una firma `shutdown_sent` sin daemon previo no es un veredicto válido.
 
 ```json
-{ "schema_version": "6", "status": "not_running", "daemon": "stopped", "was_running": false, "daemon_fully_stopped": true }
+{
+  "context": { "addr": "127.0.0.1:8765" },
+  "daemon": "stopped",
+  "daemon_fully_stopped": true,
+  "schema_version": "7",
+  "stages": [
+    { "end_ms": 500, "phase": "stop", "stage": "stopping", "start_ms": 0 }
+  ],
+  "status": "shutdown_sent",
+  "total_ms": 500,
+  "warnings": [],
+  "was_running": true
+}
 ```
 
 ```json
-{ "schema_version": "6", "status": "still_running", "daemon": "running", "was_running": true, "daemon_fully_stopped": false, "resident_alive": false, "pid": 1234, "remaining": "el daemon en 127.0.0.1:9999 responde" }
+{
+  "context": { "addr": "127.0.0.1:8765" },
+  "daemon": "stopped",
+  "daemon_fully_stopped": true,
+  "schema_version": "7",
+  "status": "not_running",
+  "was_running": false
+}
 ```
+
+Con `still_running` el envelope lleva además el veredicto: `"status": "still_running"`, `"daemon": "running"`, `"was_running": true`, `"daemon_fully_stopped": false`, `"resident_alive"`, `"pid"` y `"remaining"`, junto a `context`, `stages` (con `failed: true` en `stopping`) y `warnings`.
 
 **Vida del motor residente.** El daemon (y la CLI, en el clonado por proceso local) lanza el motor `qwen_tts` con `--watch-stdin` y mantiene abierto el extremo de escritura de una tubería conectada a su entrada estándar mientras el motor vive. Con ese flag el motor arranca, tras parsear los argumentos y antes de cargar el modelo, un hilo que lee su entrada estándar hasta fin de fichero y entonces termina el proceso (`_exit(0)`), tanto en modo residente como en clonado. Si el proceso que lo lanzó muere, de forma ordenada o con un kill duro, el sistema operativo cierra la tubería y el motor termina solo en pocos segundos (medido: 2-3 s), sin depender de un grupo de procesos del sistema ni de un barrido. Sin el flag, el motor no cambia. En macOS, si el daemon lanza dos procesos a la vez, uno podría heredar el extremo de escritura de la tubería del otro y retrasar su cierre como mucho lo que dura un clonado; es un riesgo teórico, sin verificar en esa plataforma, que se acepta. Cuando el lanzador suelta el residente de forma ordenada (al cambiar de voz o al terminar la CLI directa), lo mata y lo recolecta en el acto, porque mientras lo gestiona retiene la tubería y el motor no puede terminar solo.
 
@@ -121,9 +145,9 @@ con el matiz del residente, según el mismo dato. El envelope de `stop` bindea e
 **`status` (handler de estado):** primero la sonda del daemon (`daemon_stop::probe`, la misma de `start`), cuyo rechazo es inmediato sin daemon; solo si responde, un `GET /health` con plazo propio cuyo cuerpo aporta `engine`, `warm` y `warm_error`. El éxito de ese `GET` es el sondeo con el que `observe` clasifica: un daemon que muere entre la sonda y el `GET` cuenta como «no responde». `daemon` vale `running` solo con un daemon propio en servicio, y entonces lleva su `pid`; en cualquier otro caso vale `stopped`, y si quedan restos añade `degraded` con su código: `unresponsive` (el daemon registrado sigue vivo pero no responde), `unregistered` (algo responde en la dirección del daemon sin un daemon registrado) u `orphan_resident` (el residente sigue vivo sin daemon). Son los casos que `start` reclama antes de arrancar y que `stop` retira. Siempre sale 0, con `schema_version` ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema); fixtures `tests/golden/cli_daemon_status.json` y `cli_daemon_status_running.json`):
 
 ```json
-{ "schema_version": "6", "daemon": "running", "pid": 1234, "engine": "rust_native", "warm": "warm" }
-{ "schema_version": "6", "daemon": "stopped" }
-{ "schema_version": "6", "daemon": "stopped", "degraded": "unresponsive" }
+{ "schema_version": "7", "daemon": "running", "pid": 1234, "engine": "rust_native", "warm": "warm" }
+{ "schema_version": "7", "daemon": "stopped" }
+{ "schema_version": "7", "daemon": "stopped", "degraded": "unresponsive" }
 ```
 
 Esta clasificación es la detección de residual *al arrancar*; es un mecanismo distinto de la salud observada *por petición* dentro de una sesión ya viva que verifica la salud del residente antes de reutilizarlo en la síntesis TTS — no debe leerse como que esa verificación ya estaba resuelta por esta vía.
@@ -155,6 +179,7 @@ Los fallos del arranque se traducen a código en un único punto, compartido por
 | `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida), fallo no clasificado previo a estar listo o fallo del servidor ya en marcha | `start`, `restart`, `serve` |
 | `daemon_unreachable` | 5 | El hijo sigue vivo sin publicar su dirección al vencer el deadline, `/health` no responde tras publicarla | `start`, `restart` |
 | `daemon_stop_failed` | 16 | La parada previa no concluyó (sigue vivo el daemon o su residente): no se arranca otro daemon y el mensaje lleva lo que quedó vivo | `start` (al reclamar un residual degradado), `restart` |
+| `daemon_version_mismatch` | 5 | El daemon en marcha es de otra versión del protocolo; se resuelve con `daemon restart` | los comandos que usan el daemon (`speech`, `translate`, `voice clone`) |
 | `lifecycle_locked` | 17 | Hay una operación de ciclo de vida en curso: el comando no llega a ejecutarse ni lanza nada. `serve` toma el bloqueo compartido y lo suelta al quedar registrado en `daemon.pid`; `start` y `restart` lo retienen mientras esperan el `daemon.ready` del hijo | `start`, `restart`, `serve` |
 
 Tras un fallo de `start` o `restart` no quedan proceso hijo, `daemon.pid` ni `daemon.ready`.
@@ -175,34 +200,78 @@ Supervisión configurable: `start`/`serve` con `--auto-restart` habilitan `run_s
 
 ## Muestras de salida
 
-La línea de contexto, las etapas y el cierre van por stderr; solo `daemon status` escribe por stdout.
+La línea de contexto, las etapas y el cierre van por stderr; solo `daemon status` escribe por stdout. Las duraciones son orientativas: dependen del equipo.
 
 ```text
 # daemon start
-stderr: Daemon · 127.0.0.1:8765
-        ✓ Daemon iniciado  5,1 s
-        ✓ Motor calentado  0,9 s
-        ✓ Daemon listo en 6,0 s · pid 1234
+Daemon · 127.0.0.1:8765
+  [1/2] ✓ Arranque       4,0 s
+  [2/2] ✓ Calentamiento  4,0 s
+──────────────────────────────────────────────────
+✓ Daemon listo en 8,0 s · pid 6148
 
-# daemon start, con el calentamiento sin terminar en 10 s
-stderr: Daemon · 127.0.0.1:8765
-        ✓ Daemon iniciado  5,1 s
-        ✓ Daemon en marcha en 15,2 s · pid 1234 · el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo
+# daemon start, con el daemon ya en marcha
+Daemon · 127.0.0.1:8765
+✓ El daemon ya estaba en marcha · pid 6148
 
 # daemon stop, con el daemon en marcha
-stderr: Daemon · 127.0.0.1:8765
-        ✓ Daemon detenido en 0,8 s
+Daemon · 127.0.0.1:8765
+✓ Daemon detenido en 0,5 s
 
 # daemon stop, sin daemon en marcha
-stderr: Daemon · 127.0.0.1:8765
-        ✓ No había ningún daemon en marcha.
+Daemon · 127.0.0.1:8765
+✓ No había ningún daemon en marcha.
 
-# daemon restart
-stderr: Daemon · 127.0.0.1:8765
-        ✓ Daemon reiniciado en 6,4 s · pid 1235
+# daemon restart, con el daemon en marcha
+Daemon · 127.0.0.1:8765
+Parada → Arranque
+
+Parada
+  [1/3] ✓ Parada del daemon  0,5 s
+Arranque
+  [2/3] ✓ Arranque           3,5 s
+  [3/3] ✓ Calentamiento      4,0 s
+──────────────────────────────────────────────────
+✓ Daemon reiniciado en 8,0 s · pid 4812
+  Parada 0,5 s · Arranque 7,5 s
+
+# daemon restart, sin daemon en marcha
+Daemon · 127.0.0.1:8765
+Parada → Arranque
+
+Parada
+  [1/3] ○ Parada del daemon · no había ningún daemon en marcha
+Arranque
+  [2/3] ✓ Arranque           3,5 s
+  [3/3] ✓ Calentamiento      4,0 s
+──────────────────────────────────────────────────
+✓ Daemon reiniciado en 7,5 s · pid 5236
+  Parada 0,0 s · Arranque 7,5 s
 
 # daemon status
-stdout: Daemon: en marcha (pid 1234, puerto 8765, motor listo).
+Daemon: en marcha (pid 7320, puerto 8765, motor listo).
 ```
 
-Con `--json`, stdout lleva **solo** el envelope —`{"status": "started", "daemon": "running", "pid"}`, `{"status": "stopped", "daemon": "stopped", "was_running", "daemon_fully_stopped"}`— y no salen ni el contexto ni el cierre. Las etapas por stderr son las mismas.
+Con `--json`, stdout lleva **solo** el envelope (`started`, `already_running`, `restarted`, `shutdown_sent`, `not_running` o `still_running`, con las claves comunes) y stderr es el mismo que sin `--json`. Por ejemplo, `--json daemon start` con el daemon ya en marcha:
+
+```json
+{
+  "context": { "addr": "127.0.0.1:8765", "auto_restart": false, "warm_voice": "default" },
+  "daemon": "running",
+  "pid": 6148,
+  "schema_version": "7",
+  "status": "already_running"
+}
+```
+
+y `--json daemon status` con el daemon en marcha:
+
+```json
+{
+  "daemon": "running",
+  "engine": "rust_native",
+  "pid": 6148,
+  "schema_version": "7",
+  "warm": "warm"
+}
+```

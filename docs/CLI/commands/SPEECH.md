@@ -31,7 +31,7 @@ subcomandos delegables (`transcribe`, `synthesize`, `say` y `dub`), no de
 | `speech remove` | No | Sí |
 | `speech denoise` | No | Sí; archivos locales de audio/vídeo |
 
-`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global genera JSONL de progreso y resultados. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
+`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global emite un único envelope con `status` (`completed`, o `planned` en la simulación), `files`, `summary` y las claves comunes. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
 
 `list`/`play`/`remove` son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP: no declaran `--daemon` ni `--no-daemon` y, si se les pasa
@@ -119,20 +119,20 @@ Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet pro
 | `--pause-gate-db <dB>` / `--dry-blend <0..1>` | Ajusta el gate de pausas o la mezcla de señal seca |
 | `--stereo` | Conserva/procesa salida estéreo |
 | `--verbose` | Aumenta el detalle de progreso |
-| `--json` global | Emite registros JSONL por archivo y resumen terminal directamente, sin envelope adicional; la ejecución real publica el WAV/medio indicado por `output` |
+| `--json` global | Emite un único envelope en stdout (`status`, `files`, `summary`, `context`, `total_ms`, `stages` y `warnings`); la ejecución real publica el WAV/medio indicado por `output` |
 
 El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline migrado. No se amplía la matriz de contenedores ni códecs.
 
 Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline elimina temporales y no publica una salida parcial. **Límite verificado:** la señal se atiende al cerrar, no interrumpe el DSP en curso: en las corridas medidas con el paquete instalado el archivo se completó y publicó antes de salir con 130. Los códigos de fallo conservan la paridad con el motor de origen: entrada inválida, destino ya existente o entrada sin audio devuelven 2; ORT no disponible, FFmpeg ausente o fallido y error de E/S devuelven 1; el modelo DPDFNet ausente devuelve 4 (`model_missing`); entrada ausente devuelve 3. La cancelación pedida por la biblioteca devuelve 3. En lotes, los resultados individuales conservan los estados `ok`/`skipped`/`failed`; el código final refleja si el lote completó o tuvo fallos.
 
-Cada error se construye como un error común de la CLI, con un único mapeo de error a `reason`: entrada inválida o sin audio es `invalid_audio`, destino ya existente es `output_exists`, el modelo ausente es `model_missing`, el error de E/S es `io_error` y el resto `denoise_failed`. Los errores de validación previos al lote (un bitrate fuera de rango o incompatible con el códec, `--dry-blend`, `--pause-gate-db`, `--target-lufs`, un prefijo o sufijo inválido, entradas que no existen o ffmpeg ausente) salen como un único error `Error:` más `Solución:` en texto, o como un único envelope `{error, reason}` con `--json`, sin registros JSONL; los de uso son `usage_error` (2).
+Cada error se construye como un error común de la CLI, con un único mapeo de error a `reason`: entrada inválida o sin audio es `invalid_audio`, destino ya existente es `output_exists`, el modelo ausente es `model_missing`, el error de E/S es `io_error` y el resto `denoise_failed`. Los errores de validación previos al lote (un bitrate fuera de rango o incompatible con el códec, `--dry-blend`, `--pause-gate-db`, `--target-lufs`, un prefijo o sufijo inválido, entradas que no existen o ffmpeg ausente) salen como un único error `Error:` más `Solución:` en texto, o como un único envelope `{error, reason}` con `--json`; los de uso son `usage_error` (2). Si el lote falla en algún archivo, el envelope de error lleva además `files`, `summary`, `context`, `stages` (los archivos fallidos con `failed: true`) y `warnings`, y el comando sale con el código del lote.
 
 **Salida en texto.**
 
-- stderr abre con el contexto `Limpieza de ruido · N archivos` y muestra una etapa por archivo con su avance: `… [i/n] <nombre>  <porcentaje> %  <etapa del pipeline>  <duración>`. Cada archivo terminado deja `✓ [i/n] <nombre>  <duración> · <tamaño de la salida>`; uno omitido, `– [i/n] <nombre>: ya existe la salida; se omite.`; y uno fallido, `✗ [i/n] <nombre>: <mensaje>`. Sin terminal, cada archivo escribe `… [i/n] <nombre>` una vez y un latido cada 10 s.
-- stdout lleva la ruta completa de cada archivo generado, una por línea.
+- stderr abre con la cabecera `Limpieza de ruido · N archivos` y muestra una etapa por archivo con su avance: `… [i/n] <nombre>  <porcentaje> %  <etapa del pipeline>  <duración>`. Cada archivo terminado deja `✓ [i/n] <nombre>  <duración> · <tamaño de la salida>`; uno omitido, `– [i/n] <nombre>: ya existe la salida; se omite.`; y uno fallido, `✗ [i/n] <nombre>: <mensaje>`. Sin terminal, cada archivo escribe `… [i/n] <nombre>` una vez y un latido cada 10 s. Es igual con y sin `--json`.
+- stdout lleva la ruta completa de cada archivo generado, una por línea, como resultado `│` (con etiqueta fuera de la terminal).
 - El cierre es `✓ Limpieza de ruido completada en <total> · N archivos limpios`, más `, N omitidos` si los hay. Si algún archivo falló, el comando escribe `Error: No se pudo limpiar N de M archivos.` y sale con el peor código del lote; con `--json` no se escribe un segundo documento.
-- `--dry-run` escribe por stdout `<entrada> → <salida> (<se procesaría | se sobrescribiría | se omitiría | fallaría: ya existe la salida>)` por archivo, y por stderr `Simulación: no se ha modificado nada.`.
+- `--dry-run` escribe por stderr la cabecera `Limpieza de ruido · N archivos` y por stdout el plan, `<entrada> → <salida> (<se procesaría | se sobrescribiría | se omitiría | fallaría: ya existe la salida>)` por archivo, sin etapas, y cierra con `✓ Simulación completada · no se ha borrado nada`. Con `--json` emite el envelope `planned` con `files`, `summary` y `context`.
 - `--verbose` añade líneas de detalle atenuadas por stderr, y una salida duplicada se avisa con `Aviso:`. Los decimales llevan coma y no queda texto en inglés ni línea `Summary:`.
 
 `--model-dir` y `--ffmpeg-path` no forman parte de esta interfaz y se rechazan como flags desconocidos: provisiona el modelo con `setup` y usa el FFmpeg integrado. El único comando público para limpiar archivos es `speech denoise`.
@@ -189,7 +189,7 @@ Validaciones puras antes de despachar:
 
 Despacho:
 1. `route_to_daemon` → si aplica, `transcribe_via_daemon`:
- codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
+ codifica el PCM a `audio_b64`, hace `POST /transcribe`, que responde con un stream NDJSON (`progress`, `heartbeat` y un `result {text, source_language}` final, o `error`), y emite el mismo
  envelope que la rama local. Un error HTTP del daemon se traduce por su
  `reason` con la tabla única; un 404 sin `reason` ni `error` sale con exit 1
  `daemon_error`, y la línea `Solución:` indica reiniciar el daemon con `ai-voice-interconnector daemon restart`.
@@ -214,10 +214,10 @@ detalle de `--json`.
 ### Contrato `--json`
 
 ```json
-{ "text": "<texto transcrito>", "source_language": "<valor de --source-language>" }
+{ "status": "transcribed", "text": "<texto transcrito>", "source_language": "<valor de --source-language>" }
 ```
 
-(Mismo envelope en la rama local y vía daemon.)
+más las claves comunes (`context`, `total_ms`, `stages`, `warnings`). Mismo envelope en la rama local y vía daemon. Sin `--json`, stdout lleva `Transcripción: <texto>` (con `│` en la terminal).
 
 ---
 
@@ -339,13 +339,13 @@ rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas
 ### Contrato `--json`
 
 ```json
-{ "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
+{ "status": "synthesized", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
 { "status": "skipped", "audio_path": "<ruta del audio sintetizado existente>", "voice": "<voz>" }
 { "status": "discarded", "voice": "<voz>" }
 ```
 
 `skipped` lo emite `--skip-existing` sobre una etiqueta ocupada y `discarded` el
-descarte del bucle `--play`. (Idéntico vía daemon y en la rama local.) El
+descarte del bucle `--play`. Cada envelope lleva además las claves comunes (`context`, `total_ms`, `stages`, `warnings`); sin `--json`, stdout lleva `Audio: <ruta>` (con `│` en la terminal). (Idéntico vía daemon y en la rama local.) El
 envelope de `synthesize` no lleva `first_audio_ms` ni `stalls`: `--play`, el único
 modo en que la toma suena, es incompatible con `--json`. Si la síntesis falla o
 vence su plazo con la voz de `--play` ya sonando, se corta la reproducción, la
@@ -496,8 +496,7 @@ plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
 Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo
 plano; la cancelación del trabajo en el motor solo aplica a la síntesis).
-La limpieza de ruido de `--denoise` la hace el cliente antes de despachar y
-se muestra como la fase `denoising`, igual que en la ruta directa:
+Con `--denoise`, el cliente envía `denoise: true` y limpia el daemon (en la ruta directa, el propio proceso); la limpieza se muestra como la etapa `Limpieza`, igual en las dos rutas. El daemon, para cada petición:
 1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`) y, al terminar, emite `{"event":"transcript","text":"<transcripción>"}`.
 2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (latidos `"translate"`, con la misma segmentación de oraciones y párrafos, por lotes, que la ruta directa) y, al terminar, emite `{"event":"translation","text":"<texto traducido>"}`.
 3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking`. Al entrar en la fase emite de inmediato un `progress` con la etapa real: `synthesis` si consigue el lock al instante; si no, `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock) con latidos de esa etapa, y `progress{synthesis}` al obtenerlo. Si el motor debe arrancar un residente (primer uso, cambio de voz o residente degradado), emite `progress{loading_voice}` y los latidos pasan a esa etapa hasta que el residente está sano, momento en que vuelve `progress{synthesis}`; los latidos usan siempre la etapa vigente. El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
@@ -620,33 +619,33 @@ traducción provisionados por `setup` son `es-en` y `en-es`
 **Idioma de síntesis.** El idioma de destino (`--target-language`) es también el
 idioma que recibe el motor de síntesis, tanto en la CLI como en el daemon: el
 token del producto se traduce al nombre del motor (`es` → `Spanish`,
-`en` → `English`) y las tres voces de fábrica hablan ambos. `POST /synthesize`
+`en` → `English`) y la voz de fábrica `default` habla ambos. `POST /synthesize`
 rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usage_error`.
 
 ---
 
 ## El progreso por stderr
 
-Cada subcomando de este grupo abre con una línea de contexto por stderr (`Doblaje es → en · voz default · archivo a.wav · daemon`) y pinta sus etapas por stderr. Una etapa permanente deja, al terminar, `✓ <texto>  <duración>`; la etapa en curso se repinta debajo como `… <texto> <duración>`, también durante el trabajo bloqueante de la ruta directa, la grabación y la reproducción. Los textos de las etapas son idénticos en la ruta directa y en la del daemon, y ninguna lleva un sufijo de ruta. Los avisos pasan por un canal de consola que borra la línea de etapa abierta antes de escribir (`Aviso: …`); el indicador la repinta en su siguiente repintado.
+Cada subcomando de este grupo abre con una cabecera por stderr (`Doblaje es → en · voz default · archivo a.wav · daemon`) y pinta sus etapas por stderr, numeradas `[n/N]` cuando hay dos o más y agrupadas en fases (`Entrada`, `Texto`, `Voz`, `Guardado`) cuando hay dos o más fases; la salida de stderr es la misma con y sin `--json`. Una etapa permanente deja, al terminar, `✓ <etapa>  <duración>`; la etapa en curso (`●`) se repinta debajo, también durante el trabajo bloqueante de la ruta directa, la grabación y la reproducción. Los textos de las etapas son idénticos en la ruta directa y en la del daemon, y ninguna lleva un sufijo de ruta. Un aviso sale como `⚠` bajo la etapa que lo causa (y como `Aviso:` solo si no hay ninguna etapa).
 
-Las etapas de los subcomandos de voz son estas; las marcadas como transitorias se borran al terminar y no dejan línea:
+Las etapas de los subcomandos de voz son estas, tomadas del catálogo del terminal; las transitorias se borran al terminar y no dejan línea:
 
-| Etapa | Texto activo | Texto terminado |
+| Etapa | Texto activo | Línea terminada |
 |---|---|---|
 | validación | `Validando…` | transitoria |
 | envío al daemon | `Enviando al daemon…` | transitoria |
 | espera de turno de la limpieza de ruido | `Esperando turno para limpiar el ruido…` | transitoria |
-| lectura del archivo | `Leyendo el audio…` | `Audio leído` |
-| captura | `Grabando…` | `Audio grabado` |
-| limpieza de ruido | `Limpiando el ruido…` | `Ruido limpiado` |
-| transcripción | `Transcribiendo…` | `Transcrito` |
-| traducción | `Traduciendo…` | `Traducido` |
-| síntesis | `Sintetizando…` | `Primer audio` si después se reproduce; si no, `Voz sintetizada` |
-| guardado | `Guardando…` | transitoria |
-| reproducción | `Reproduciendo…` | `Reproducido` |
-| clonado | `Clonando la voz… (puede tardar varios minutos)` | `Voz clonada` |
+| `Lectura` | `Leyendo el audio…` | `✓ Lectura` |
+| `Grabación` | `Grabando…` | `✓ Grabación` |
+| `Limpieza` | `Limpiando el ruido…` | `✓ Limpieza` |
+| `Transcripción` | `Transcribiendo…` | `✓ Transcripción` |
+| `Traducción` | `Traduciendo…` | `✓ Traducción` |
+| `Síntesis` | `Sintetizando…` | `✓ Síntesis` (con `· primer audio X` si después se reproduce) |
+| guardado | `Guardando…` | transitoria en `voice clone`; `✓ Guardado` en `synthesize` |
+| `Reproducción` | `Reproduciendo…` | `✓ Reproducción · en paralelo con la síntesis` |
+| `Clonación` | `Clonando la voz… (puede tardar varios minutos)` | `✓ Clonación` |
 
-Las esperas de la síntesis no son etapas propias, sino textos vivos de la etapa de síntesis, con su mismo reloj, que nunca la cierran como hecha: `Esperando turno para sintetizar…` (otra síntesis tiene el turno), `Calentando el motor…` (el daemon aún calienta el motor) y `Cargando la voz…` (el motor arranca el residente de la voz pedida). Cuando un comando solo tiene una etapa de trabajo (`speech play` y `speech synthesize` sin `--play` y sin traducción), esa etapa no deja su línea y queda solo el cierre; con `--json` la regla no actúa. El **resultado** —el texto, la ruta o el envelope `--json`— va por stdout en cuanto existe, y el cierre (`✓ <acción> en <duración total>`) va por stderr, una sola vez.
+Las esperas de la síntesis no son etapas propias, sino textos vivos de la etapa de síntesis, con su mismo reloj, que nunca la cierran como hecha: `Esperando turno para sintetizar…` (otra síntesis tiene el turno), `Calentando el motor…` (el daemon aún calienta el motor) y `Cargando la voz…` (el motor arranca el residente de la voz pedida). Cuando un comando solo tiene una etapa de trabajo (`speech play` y `speech synthesize` sin `--play` y sin traducción), esa etapa no deja su línea y queda solo el cierre, igual con y sin `--json`. El **resultado** —el texto, la ruta o el envelope `--json`— va por stdout en cuanto existe, y el cierre (`✓ <acción> en <duración total>`) va por stderr, una sola vez.
 
 `AVI_NO_PROGRESS=1` silencia solo las etapas por stderr —línea activa, líneas terminadas y latidos—, y nada más: el contexto, los resultados por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian. `NO_COLOR` desactiva el color; la salida redirigida nunca lleva color.
 
@@ -713,43 +712,209 @@ ai-voice-interconnector --json speech list --voice mi_voz
 
 ## Muestras de salida
 
-Los **resultados** van por stdout, en cuanto existen. La línea de contexto, las etapas y el cierre van por stderr.
+Los **resultados** van por stdout, en cuanto existen (con `│` en la terminal y con etiqueta fuera de ella). La cabecera, las etapas y el cierre van por stderr. Las duraciones son orientativas: dependen del equipo.
 
 ```text
-# speech synthesize (ruta local)
-stdout: <ruta del WAV persistido>
-stderr: Síntesis es · voz default · etiqueta saludo · local
-        ✓ Síntesis completada en 2,1 s · 3,4 s de audio
+# speech synthesize --text "Hola, esta es una muestra." --label muestra --no-daemon
+Síntesis es · voz default · etiqueta muestra · local
+Voz → Guardado
 
-# speech say
-stderr: Lectura en voz alta es · voz default · local
-        ✓ Primer audio  1,2 s
-        ✓ Reproducido  3,0 s
-        ✓ Reproducción completada en 4,3 s · primer audio 1,2 s
+Voz
+  [1/2] ✓ Síntesis  5,0 s
+Guardado
+  [2/2] ✓ Guardado  0,2 s
+        │ %LOCALAPPDATA%\ai-voice-interconnector\data\speech\default\muestra.wav
+──────────────────────────────────────────────────
+✓ Síntesis completada en 5,2 s · 2,8 s de audio
+  Voz 5,0 s · Guardado 0,2 s
 
-# speech transcribe
-stdout: <el texto transcrito>
-stderr: Transcripción es · archivo entrada.wav · local
-        ✓ Audio leído  0,1 s
-        ✓ Transcrito  1,4 s
-        ✓ Transcripción completada en 1,6 s
+# speech synthesize --skip-existing sobre una etiqueta ocupada
+Síntesis es · voz default · etiqueta muestra · local
+Voz → Guardado
 
-# speech dub
-stdout: Transcripción: <el texto transcrito>
-        Traducción: <el texto traducido>
-stderr: Doblaje en → es · voz default · archivo entrevista.wav · daemon
-        ✓ Audio leído  0,1 s
-        ✓ Transcrito  2,0 s
-        ✓ Traducido  0,6 s
-        ✓ Primer audio  1,1 s
-        ✓ Reproducido  4,2 s
-        ✓ Doblaje completado en 8,2 s · primer audio 1,1 s
+Voz
+  [1/2] ○ Síntesis · ya existía
+Guardado
+  [2/2] ○ Guardado · ya existía
+        │ %LOCALAPPDATA%\ai-voice-interconnector\data\speech\default\muestra.wav
+──────────────────────────────────────────────────
+✓ Ya existía; se conserva sin sintetizar de nuevo.
 
-# speech play
-stderr: Reproducción del audio sintetizado saludo · voz default
-        ✓ Reproducción completada en 2,0 s
+# speech say --text "Hola, esta es una muestra de la salida por fases." --no-daemon
+Lectura en voz alta es · voz default · local
+  [1/2] ✓ Síntesis      6,5 s · primer audio 3,0 s
+  [2/2] ✓ Reproducción  5,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 8,0 s · primer audio 3,0 s
+
+# speech say con otro idioma de destino
+Lectura en voz alta es → en · voz default · local
+Texto → Voz
+
+Texto
+  [1/3] ✓ Traducción    0,4 s
+        │ "Hello, this is a sample."
+Voz · streaming
+  [2/3] ✓ Síntesis      4,0 s · primer audio 3,0 s
+  [3/3] ✓ Reproducción  2,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 5,4 s · primer audio 3,0 s
+  Texto 0,4 s · Voz 5,0 s
+
+# speech say en inglés
+Lectura en voz alta en · voz default · local
+  [1/2] ✓ Síntesis      5,5 s · primer audio 3,0 s
+  [2/2] ✓ Reproducción  3,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 6,0 s · primer audio 3,0 s
+
+# speech say por el daemon
+Lectura en voz alta es · voz default · daemon
+  [1/2] ✓ Síntesis      4,5 s · primer audio 1,0 s
+  [2/2] ✓ Reproducción  5,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 6,0 s · primer audio 1,0 s
+
+# speech transcribe --audio clip8.wav --source-language es --no-daemon
+Transcripción es · archivo clip8.wav · local
+Entrada → Texto
+
+Entrada
+  [1/2] ✓ Lectura        0,2 s
+Texto
+  [2/2] ✓ Transcripción  3,5 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
+ respectivas bases de datos.
+──────────────────────────────────────────────────
+✓ Transcripción completada en 3,7 s
+  Entrada 0,2 s · Texto 3,5 s
+
+# speech transcribe por el daemon
+Transcripción es · archivo clip8.wav · daemon
+Entrada → Texto
+
+Entrada
+  [1/2] ✓ Lectura        0,2 s
+Texto
+  [2/2] ✓ Transcripción  0,6 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
+ respectivas bases de datos.
+──────────────────────────────────────────────────
+✓ Transcripción completada en 0,8 s
+  Entrada 0,2 s · Texto 0,6 s
+
+# speech dub --audio clip8.wav --source-language es --target-language en --no-daemon
+Doblaje es → en · voz default · archivo clip8.wav · local
+Entrada → Texto → Voz
+
+Entrada
+  [1/5] ✓ Lectura        0,2 s
+Texto
+  [2/5] ✓ Transcripción  3,5 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
+ respectivas bases de datos.
+  [3/5] ✓ Traducción     0,5 s
+        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together wit
+h their respective databases.
+Voz · streaming
+  [4/5] ✓ Síntesis       10,0 s · primer audio 3,0 s
+  [5/5] ✓ Reproducción   9,5 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Doblaje completado en 16,7 s · primer audio 3,0 s
+  Entrada 0,2 s · Texto 4,0 s · Voz 12,5 s
+
+# speech dub por el daemon
+Doblaje es → en · voz default · archivo clip8.wav · daemon
+Entrada → Texto → Voz
+
+Entrada
+  [1/5] ✓ Lectura        0,2 s
+Texto
+  [2/5] ✓ Transcripción  0,6 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
+ respectivas bases de datos.
+  [3/5] ✓ Traducción     0,3 s
+        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together wit
+h their respective databases.
+Voz · streaming
+  [4/5] ✓ Síntesis       8,0 s · primer audio 1,0 s
+  [5/5] ✓ Reproducción   9,5 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Doblaje completado en 11,6 s · primer audio 1,0 s
+  Entrada 0,2 s · Texto 0,9 s · Voz 10,5 s
+
+# speech play --label muestra
+Reproducción del audio sintetizado muestra · voz default
+✓ Reproducción completada en 3,0 s
+
+# speech list
+Audios sintetizados guardados:
+  default  muestra-2  2,8 s  «"Hola, esta es una muestra."»
+  default  muestra-json  1,8 s  «Hola, esta es una muestra.»
+  default  muestra  2,8 s  «"Hola, esta es una muestra."»
+
+# speech remove --label muestra --yes
+Borrado del audio sintetizado muestra · voz default
+Se borrará el audio sintetizado muestra de la voz default:
+  %LOCALAPPDATA%\ai-voice-interconnector\data\speech\default\muestra.wav (134,4 KB)
+✓ Audio sintetizado muestra de la voz default borrado en 0,0 s
+
+# speech denoise clip8.wav clip3.wav --output-dir limpios
+Limpieza de ruido · 2 archivos
+  [1/2] ✓ clip3.wav  4,0 s · 286,6 KB
+        │ C:\Users\usuario\Audio\limpios\clip3_denoised.wav
+  [2/2] ✓ clip8.wav  8,5 s · 766,6 KB
+        │ C:\Users\usuario\Audio\limpios\clip8_denoised.wav
+──────────────────────────────────────────────────
+✓ Limpieza de ruido completada en 12,5 s · 2 archivos limpios
+
+# speech denoise ... --dry-run
+Limpieza de ruido · 2 archivos
+C:\Users\usuario\Audio\clip3.wav → C:\Users\usuario\Audio\limpios\clip3_denoised.wav (se procesaría)
+C:\Users\usuario\Audio\clip8.wav → C:\Users\usuario\Audio\limpios\clip8_denoised.wav (se procesaría)
+✓ Simulación completada · no se ha borrado nada
 ```
 
-Con terminal, la etapa en curso aparece debajo de las ya terminadas como `… Reproduciendo… 1,3 s` y se repinta; sin terminal escribe `… <texto>` una vez, un latido cada 10 s y la línea `✓` al terminar.
+Con terminal, la etapa en curso aparece debajo de las ya terminadas con `●` y se repinta; sin terminal se anuncia una vez, deja un latido cada 10 s y la línea `✓` al terminar. Con stdout redirigido a un archivo, `speech transcribe` escribe en él `Transcripción: <texto>`.
 
-Con `--json`, stdout lleva **solo** el envelope —`{"status": "success"|"skipped", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y no salen ni el contexto, ni los resultados de texto, ni el cierre. Las etapas por stderr son las mismas.
+Con `--json`, stdout lleva **solo** el envelope y stderr es el mismo que sin `--json`: `{"status": "synthesized"|"skipped"|"discarded", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"status": "transcribed", "text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`, `{"status": "removed", "label", "voice"}` o `{"status": "completed"|"planned", "files", "summary"}`, todos con las claves comunes. Por ejemplo, `--json speech synthesize --text "Hola, esta es una muestra." --label muestra-json --no-daemon`:
+
+```json
+{
+  "audio_path": "%LOCALAPPDATA%\\ai-voice-interconnector\\data\\speech\\default\\muestra-json.wav",
+  "context": {
+    "label": "muestra-json",
+    "route": "local",
+    "source_language": "es",
+    "target_language": "es",
+    "voice": "default"
+  },
+  "schema_version": "7",
+  "stages": [
+    { "end_ms": 0, "phase": null, "stage": "validating", "start_ms": 0, "transient": true },
+    { "end_ms": 4000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
+    { "end_ms": 4300, "phase": "save", "stage": "saving", "start_ms": 4000 }
+  ],
+  "status": "synthesized",
+  "total_ms": 4300,
+  "voice": "default",
+  "warnings": []
+}
+```
+
+y `--json speech remove --label muestra-2 --yes`:
+
+```json
+{
+  "context": { "label": "muestra-2", "voice": "default" },
+  "label": "muestra-2",
+  "schema_version": "7",
+  "stages": [
+    { "end_ms": 0, "phase": null, "stage": "removing", "start_ms": 0 }
+  ],
+  "status": "removed",
+  "total_ms": 0,
+  "voice": "default",
+  "warnings": []
+}
+```

@@ -42,7 +42,7 @@ inmediato en todas las plataformas y la ejecución local no espera.
 devuelve JSON plano y no emite eventos, así que sin repintado la etapa
 quedaría sin avance visible mientras el motor traduce. Con `AVI_NO_PROGRESS=1` las
 etapas por stderr se silencian —la etapa incluida—, y nada más: la línea de
-contexto, el texto traducido por stdout, el cierre, el envelope `--json` y los
+contexto, el resultado `Traducción:` por stdout, el cierre, el envelope `--json` y los
 códigos de salida no cambian. El indicador se repinta con su
 propio reloj durante la espera, de modo que el tiempo visible avanza. El
 plazo de la petición no cambia: lo que cambia es lo que se ve
@@ -72,7 +72,7 @@ handle_translate
 texto vacío (trim)? ──sí──► Err InvalidInput "empty_text" (exit 2)
     │ no
     ▼
-source == target? ──sí──► passthrough: devuelve el texto intacto, sin tocar el motor (exit 0)
+source == target? ──sí──► passthrough: sin cabecera ni etapas, resultado etiquetado, sin tocar el motor (exit 0)
     │ no
     ▼
 route_to_daemon(daemon_mode, client)   ← Auto: probe /health; ForceDaemon: siempre; ForceDirect: nunca
@@ -98,9 +98,11 @@ que las invariantes de contrato no dependen de si el daemon está activo. Los tr
 ## Passthrough: source == target
 
 Cuando origen y destino coinciden, `handle_translate`
-devuelve el texto de entrada intacto sin instanciar ningún motor
-(`src/main.rs`). Es el único caso donde no se exige el modelo de traducción
-provisionado.
+no instancia ningún motor (`src/main.rs`) y es el único caso donde no se exige el
+modelo de traducción provisionado. No hay cabecera ni etapas: sale solo el
+resultado etiquetado `Traducción: <texto>` (con `│` en la terminal) con el mismo texto de
+entrada, y el envelope lleva `status: "translated"`, sin `context`, `total_ms`,
+`stages` ni `warnings`.
 
 ---
 
@@ -162,9 +164,14 @@ de los motores residentes de inferencia.
 | Clave | Tipo | Significado |
 |---|---|---|
 | `schema_version` | string | Inyectada por `with_schema_version`/`emit_raw_json` (`crates/avi-core/src/json_emitter.rs`); ver [las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema) |
-| `translated` | string | Texto traducido (o el texto de entrada intacto en passthrough) |
+| `status` | string | Siempre `"translated"` |
+| `translated` | string | Texto traducido (o el texto de entrada en passthrough) |
 | `source_language` | string | Valor de `--source-language` tal como se pasó |
 | `target_language` | string | Valor de `--target-language` tal como se pasó |
+| `context` | objeto | `source_language`, `target_language` y `route` (`local` o `daemon`); ausente en el passthrough |
+| `total_ms` | entero | Duración total en milisegundos; ausente en el passthrough |
+| `stages` | lista | La etapa `translating` con `stage`, `phase`, `start_ms` y `end_ms`; ausente en el passthrough |
+| `warnings` | lista | Avisos de la ejecución; ausente en el passthrough |
 
 Error, stdout (vía el manejador genérico de `main`, `src/main.rs`):
 
@@ -207,17 +214,51 @@ ai-voice-interconnector --json translate --daemon --text "Buenos días" --source
 
 ## Muestras de salida
 
-El **resultado** —el texto traducido, sin etiqueta, o el envelope `--json`— va por stdout. La línea de contexto, la etapa y el cierre van por stderr.
+El **resultado** va por stdout: `Traducción: <texto>` fuera de la terminal y `│ "<texto>"` en la terminal, o el envelope con `--json`. La cabecera, la etapa y el cierre van por stderr, igual con y sin `--json`. Las duraciones son orientativas: dependen del equipo.
 
 ```text
-# translate
-stdout: <el texto traducido>
-stderr: Traducción es → en · daemon
-        ✓ Traducción completada en 0,5 s
+# translate --text "Hola, mundo." --source-language es --target-language en --no-daemon
+Traducción es → en · local
+  │ "Hello, world."
+✓ Traducción completada en 0,4 s
 
-# translate --json
-stdout: {"translated": "…", "source_language": "es", "target_language": "en"}
-stderr: ✓ Traducido  0,4 s
+# translate por el daemon
+Traducción es → en · daemon
+  │ "Hello, world."
+✓ Traducción completada en 0,1 s
+
+# translate con el mismo idioma (sin cabecera ni etapas)
+  │ "Hola, mundo."
 ```
 
-La etapa se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `0,0 s`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. `translating` es la única etapa del comando, así que en texto no deja su línea `✓ Traducido` y queda solo el cierre; con `--json` no hay cierre y la línea de la etapa es la única que da su duración por stderr. Con `--json` no salen ni el contexto ni el cierre. Con `AVI_NO_PROGRESS=1` las etapas por stderr se silencian, y nada más: el resultado por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian.
+Con `--json`, stdout lleva solo el envelope (aquí, `--json translate --text "Hola, mundo." --source-language es --target-language en --no-daemon`):
+
+```json
+{
+  "context": { "route": "local", "source_language": "es", "target_language": "en" },
+  "schema_version": "7",
+  "source_language": "es",
+  "stages": [
+    { "end_ms": 300, "phase": null, "stage": "translating", "start_ms": 0 }
+  ],
+  "status": "translated",
+  "target_language": "en",
+  "total_ms": 300,
+  "translated": "Hello, world.",
+  "warnings": []
+}
+```
+
+y, con el mismo idioma, el envelope del passthrough, sin etapas:
+
+```json
+{
+  "schema_version": "7",
+  "source_language": "es",
+  "status": "translated",
+  "target_language": "es",
+  "translated": "Hola, mundo."
+}
+```
+
+La etapa se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `0,0 s`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. `translating` es la única etapa del comando, así que no deja su línea y queda solo el cierre. Con `AVI_NO_PROGRESS=1` las etapas por stderr se silencian, y nada más: el resultado por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian.
