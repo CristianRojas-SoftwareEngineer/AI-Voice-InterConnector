@@ -1,6 +1,6 @@
 {
   "schema_version": "7",
-  "status": "planned",
+  "status": "not_installed",
   "reason": null,
   "context": {
     "dry_run": true,

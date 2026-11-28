@@ -10216,7 +10216,9 @@ fn filesystem_snapshot(root: &std::path::Path) -> Vec<(String, u64)> {
     entries
 }
 
-/// Sin receipt, el simulacro en sandbox tampoco adopta el estado convencional.
+/// Sin receipt, el simulacro en sandbox tampoco adopta el estado convencional:
+/// el envelope es entero el de la fixture (`not_installed`, sin plan) y el
+/// disco queda igual.
 #[test]
 fn uninstall_dry_run_without_receipt_preserves_unregistered_state() {
     let (sandbox, envs) = contract_sandbox("uninstall-dry-unregistered");
@@ -10225,13 +10227,7 @@ fn uninstall_dry_run_without_receipt_preserves_unregistered_state() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--dry-run"], &envs);
     assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
-    assert_eq!(actual["status"], "not_installed");
-    assert_eq!(actual["planned"], serde_json::json!([]));
-    assert_eq!(actual["removed"], serde_json::json!([]));
-    assert_eq!(
-        actual["preserved"],
-        fixture("cli_uninstall_dry_run.json")["preserved"]
-    );
+    assert_eq!(actual, fixture("cli_uninstall_dry_run.json"));
     assert_eq!(filesystem_snapshot(&data), before);
 }
 
