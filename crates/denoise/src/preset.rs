@@ -18,15 +18,15 @@ use clap::ValueEnum;
 /// Bitrate de audio solicitado en la frontera de salida.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AudioBitrate {
-    /// Perfil original: 192 kbps en códecs con pérdida; sin pérdida no lleva.
-    Legacy,
+    /// 192 kbps en códecs con pérdida; sin pérdida no lleva.
+    Fixed192,
     /// Receta `studio`: automático por códec (MP3/AAC 320, Vorbis 192, Opus 256).
     Auto,
     /// Override explícito del usuario, validado contra el códec antes de ffmpeg.
     Explicit(u32),
 }
 
-/// Valores por defecto actuales de los parámetros de egress/post-procesamiento.
+/// Valores por defecto de los parámetros de egress/post-procesamiento.
 ///
 /// Son el punto de partida antes de aplicar un preset o flags individuales.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,7 +47,7 @@ pub struct DefaultParams {
 
 /// Valores por defecto canónicos del CLI (`denoise` sin flags).
 pub const DEFAULT_PARAMS: DefaultParams = DefaultParams {
-    audio_bitrate: AudioBitrate::Legacy,
+    audio_bitrate: AudioBitrate::Fixed192,
     pause_gate_db: -25.0,
     dry_blend: 0.0,
     target_lufs: None,
@@ -118,7 +118,7 @@ impl Preset {
     pub fn egress_params(&self) -> EgressParams {
         match self {
             Preset::Default => EgressParams {
-                audio_bitrate: AudioBitrate::Legacy,
+                audio_bitrate: AudioBitrate::Fixed192,
                 highpass: DEFAULT_PARAMS.highpass,
                 target_lufs: DEFAULT_PARAMS.target_lufs,
                 pause_gate_db: DEFAULT_PARAMS.pause_gate_db,

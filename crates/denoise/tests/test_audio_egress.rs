@@ -110,7 +110,7 @@ fn test_encode_audio_codec_matrix() {
             &clean_wav,
             &clean_wav,
             &out_part,
-            AudioBitrate::Legacy,
+            AudioBitrate::Fixed192,
             None,
         )
         .unwrap_or_else(|e| panic!("encode_audio falló para .{}: {:?}", ext, e));

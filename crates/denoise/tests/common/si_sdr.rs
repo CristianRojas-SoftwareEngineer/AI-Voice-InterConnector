@@ -1,6 +1,6 @@
 //! Implementación Rust puro de SI-SDR (Scale-Invariant Signal-to-Distortion Ratio).
 //!
-//! Usado por `test_golden` (RNF-04).
+//! Usado por `test_golden`.
 //! Fórmula: `SI-SDR(x, x̂) = 10 · log10( ||x · ŝ||² / ||x - ŝ||² )`
 //! donde `ŝ = (x·x̂ / ||x||²) · x` = proyección escalada de `x̂` sobre `x`.
 

@@ -3,12 +3,11 @@ name = "denoise"
 version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
-# Crate trasplantado desde el repositorio Denoise (MIT), que sigue siendo su
-# fuente de verdad mientras dure la migración. El aviso Apache-2.0 del modelo
-# DPDFNet vive en `src/models.rs`.
+# Crate de limpieza de ruido (MIT). El aviso Apache-2.0 del modelo DPDFNet vive
+# en `src/models.rs`.
 license = "MIT"
 publish = false
-description = "Limpieza de ruido DPDFNet ONNX para la pista de audio de audio y vídeo (trasplante de Denoise 1.0.0)."
+description = "Limpieza de ruido DPDFNet ONNX para la pista de audio de audio y vídeo."
 
 [lib]
 name = "denoise"
@@ -16,14 +15,11 @@ path = "src/lib.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-# Adaptación de trasplante: el origen enlaza ORT estático
-# (`copy-dylibs`/`download-binaries`), que exige el CRT dinámico y no enlaza en
-# este workspace (Windows compila con `+crt-static` por CTranslate2). Se usa la
-# configuración de ORT del workspace: la librería se carga en ejecución desde
-# `ORT_DYLIB_PATH`, que la resuelve el bundle de AVI. La fase siguiente sustituye
-# esta carga implícita por el módulo compartido `avi-shared::onnx_runtime`, que
-# es quien debe resolver directorio a fichero y cargar la librería una sola vez
-# por proceso.
+# ORT usa la configuración del workspace (`load-dynamic`): la librería se carga
+# en ejecución desde `ORT_DYLIB_PATH`, que la resuelve el bundle de AVI, y el
+# módulo compartido `avi_shared::onnx_runtime` la carga una sola vez por
+# proceso. El enlace estático de ORT exige el CRT dinámico y no enlaza en este
+# workspace (Windows compila con `+crt-static` por CTranslate2).
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "preload-dylibs"] }
 # Carga única de ONNX Runtime (`avi_shared::onnx_runtime`): la sesión DPDFNet la
 # invoca antes de `Session::builder()`, de modo que STT y DPDFNet comparten un

@@ -38,7 +38,7 @@ fn test_preset_studio_values() {
 #[test]
 fn test_preset_default_values() {
     let pp = Preset::Default.egress_params();
-    assert_eq!(pp.audio_bitrate, AudioBitrate::Legacy);
+    assert_eq!(pp.audio_bitrate, AudioBitrate::Fixed192);
     assert!(!pp.highpass);
     assert_eq!(pp.target_lufs, None);
 }
@@ -143,14 +143,14 @@ fn test_egress_params_eq() {
 #[test]
 fn test_egress_params_fields() {
     let p = EgressParams {
-        audio_bitrate: AudioBitrate::Legacy,
+        audio_bitrate: AudioBitrate::Fixed192,
         highpass: false,
         target_lufs: None,
         pause_gate_db: -25.0,
         dry_blend: 0.0,
         stereo: false,
     };
-    assert_eq!(p.audio_bitrate, AudioBitrate::Legacy);
+    assert_eq!(p.audio_bitrate, AudioBitrate::Fixed192);
     assert!(!p.highpass);
     assert_eq!(p.target_lufs, None);
     assert_eq!(p.pause_gate_db, -25.0);

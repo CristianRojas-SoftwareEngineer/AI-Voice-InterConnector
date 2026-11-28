@@ -612,7 +612,7 @@ pub fn run_dry_run(
     Ok(())
 }
 
-/// Imprime versión según RF-10: `denoise 1.0.0 + modelo DPDFNet + ffmpeg <ver>`.
+/// Imprime la versión: `denoise 1.0.0 + modelo DPDFNet + ffmpeg <ver>`.
 pub fn print_version(ffmpeg_version: Option<&str>) {
     let pkg_ver = env!("CARGO_PKG_VERSION");
     let ff_str = ffmpeg_version.unwrap_or("ffmpeg missing");
@@ -638,7 +638,7 @@ pub fn execute<F>(
 where
     F: Fn() -> Result<PathBuf, E>,
 {
-    // Imprimir versión según RF-10 si se pasa --version o -V.
+    // Imprimir la versión si se pasa --version o -V.
     if cli.version {
         let ff_ver = resolve_ffmpeg()
             .ok()
@@ -766,8 +766,7 @@ where
     Ok(process_batch(&resolved, &params))
 }
 
-/// Resuelve los parámetros con el comportamiento del origen (sin preset =
-/// defaults originales).
+/// Resuelve los parámetros con los valores por defecto (sin preset).
 pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
     resolve_egress_params_with(cli, false)
 }

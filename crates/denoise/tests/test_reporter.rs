@@ -54,8 +54,14 @@ fn test_file_report_is_parseable() {
     assert_eq!(deserialized["output"], "output.mp4");
     assert_eq!(deserialized["status"], "ok");
     assert_eq!(deserialized["message"], "completado");
-    // El avance por archivo ya no viaja en el JSON.
-    assert!(deserialized.get("pct").is_none());
+    let mut keys: Vec<&str> = deserialized
+        .as_object()
+        .expect("el reporte de archivo es un objeto")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["input", "message", "output", "status"]);
 }
 
 #[test]

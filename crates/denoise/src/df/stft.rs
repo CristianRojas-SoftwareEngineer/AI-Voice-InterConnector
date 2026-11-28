@@ -402,7 +402,7 @@ mod tests {
 
         let padded = stft.pad_signal(&original);
 
-        // Ruta histórica
+        // Ruta por lotes
         let frames = stft.forward_stft(&padded);
         let expected = stft.inverse_stft(&frames, n);
 

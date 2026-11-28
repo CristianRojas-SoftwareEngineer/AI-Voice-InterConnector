@@ -107,7 +107,7 @@ fn test_remux_video_copy() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        AudioBitrate::Legacy,
+        AudioBitrate::Fixed192,
         probe_in.duration,
         None,
     )
@@ -156,7 +156,7 @@ fn test_remux_duracion_contenedor() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        AudioBitrate::Legacy,
+        AudioBitrate::Fixed192,
         probe_in.duration,
         None,
     )
@@ -197,7 +197,7 @@ fn test_remux_mov_mp4_editlist_sync() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        AudioBitrate::Legacy,
+        AudioBitrate::Fixed192,
         probe_in.duration,
         None,
     )

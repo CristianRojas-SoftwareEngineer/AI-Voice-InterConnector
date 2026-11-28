@@ -389,7 +389,7 @@ pub(crate) fn resolve_audio_bitrate(ext: &str, requested: AudioBitrate) -> Resul
         _ => (None, None),
     };
     match requested {
-        AudioBitrate::Legacy => Ok(auto.map(|_| 192)),
+        AudioBitrate::Fixed192 => Ok(auto.map(|_| 192)),
         AudioBitrate::Auto => Ok(auto),
         AudioBitrate::Explicit(kbps) => match max {
             None => Err(E::EInvalidInput(format!(
@@ -617,17 +617,17 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_audio_bitrate_legacy() {
+    fn test_resolve_audio_bitrate_fixed192() {
         for ext in ["mp3", "m4a", "aac", "ogg", "opus"] {
             assert_eq!(
-                resolve_audio_bitrate(ext, AudioBitrate::Legacy).unwrap(),
+                resolve_audio_bitrate(ext, AudioBitrate::Fixed192).unwrap(),
                 Some(192),
-                "Legacy debe conservar 192 kbps en .{ext}"
+                "Fixed192 debe conservar 192 kbps en .{ext}"
             );
         }
         for ext in ["wav", "flac"] {
             assert_eq!(
-                resolve_audio_bitrate(ext, AudioBitrate::Legacy).unwrap(),
+                resolve_audio_bitrate(ext, AudioBitrate::Fixed192).unwrap(),
                 None,
                 "{ext} es sin pérdida y no lleva bitrate"
             );
