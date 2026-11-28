@@ -3,7 +3,7 @@
 Este directorio reúne los informes transitorios de defectos en investigación. Todos
 siguen la misma estructura para que quien los diagnostique encuentre la información
 en el mismo sitio: qué pasa, cómo reproducirlo, qué se esperaba y qué se sabe de la
-causa. Los diagnósticos retirados se consultan en el historial de Git.
+causa.
 
 ## Convenciones
 
@@ -113,10 +113,4 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 ## Estado del registro
 
-No queda ningún informe en el árbol: los resueltos sobre el indicador de progreso
-y la poda de sandboxes se propagaron al código, las pruebas y la documentación
-vigente, y el diagnóstico de la latencia intermitente de `daemon start` en CI
-Windows se retiró del árbol sin dar el defecto por resuelto. Git conserva los
-informes originales y sus resoluciones. El estado abierto de los asuntos que
-quedaron pendientes se sigue de sesión en sesión en el prompt de continuidad de
-`.claude/`, fuera del árbol versionado, no en este registro.
+Sin informes abiertos.

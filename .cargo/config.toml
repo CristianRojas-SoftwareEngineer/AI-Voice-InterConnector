@@ -28,10 +28,10 @@ CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 # explícitamente la sustituye.
 ORT_DYLIB_PATH = { value = "ort-bundle", relative = true }
 # Confina los temporales de todo lo que lanza cargo (pruebas, `cargo run`,
-# `cargo xtask`) dentro de `target/`. Antes, las pruebas abortadas dejaban
-# sandboxes y directorios temporales en el temporal del sistema, donde nada los
-# limpiaba; ahora quedan bajo `target/`, que vacían `cargo clean` y
-# `cargo xtask clean`. La ruta es `target` y no `target/tmp` porque cargo no crea
+# `cargo xtask`) dentro de `target/`. Las pruebas abortadas dejan sus sandboxes
+# y directorios temporales bajo `target/`, que vacían `cargo clean` y
+# `cargo xtask clean`, en vez de en el temporal del sistema, donde nada los
+# limpia. La ruta es `target` y no `target/tmp` porque cargo no crea
 # `target/tmp` antes del primer proceso hijo: con `target/` en frío el enlazador
 # falla (LNK1104) al no poder escribir su temporal, mientras que cargo crea
 # `target` antes de compilar. Con un intermediario del compilador

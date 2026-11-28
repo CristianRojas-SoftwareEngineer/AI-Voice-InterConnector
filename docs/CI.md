@@ -30,7 +30,7 @@ Este documento explica **por qué** el pipeline de CircleCI tiene la forma que t
 
 La publicación es irreversible, así que debe estar condicionada a los tests por una dependencia real, no por confianza. CircleCI no encadena pipelines distintas: un job solo puede depender de otro dentro del mismo workflow. La única forma de que los tests **bloqueen** el release es tenerlos en el grafo de `requires:` de la publicación, es decir, en el mismo pipeline (`build-all`, disparado solo por tags `v*`). Las puertas (tests por SO, cobertura, suites de bootstrap y la validación de licencias y changelog) son `requires:` de `publish-release`, junto con los builds y las verificaciones de portabilidad. Los builds nativos no consumen nada de las puertas, así que no las esperan: corren en paralelo con ellas y la ruta crítica deja de sumar la suite más lenta al build más lento.
 
-Se descartó un pipeline de rama `validate`. Como el corte empuja commit y tag juntos, ese workflow disparaba una segunda pipeline que re-ejecutaba la misma suite sobre el mismo commit, en paralelo con `build-all`: no adelantaba la señal ni aportaba cobertura única. Con las puertas dentro del pipeline de release, los tests corren una vez por release y bloquean de verdad la publicación.
+No hay un pipeline de rama `validate`: como el corte empuja commit y tag juntos, ese workflow dispararía una segunda pipeline que re-ejecutaría la misma suite sobre el mismo commit, en paralelo con `build-all`, sin adelantar la señal ni aportar cobertura única. Con las puertas dentro del pipeline de release, los tests corren una vez por release y bloquean de verdad la publicación.
 
 ### Feedback pre-release
 

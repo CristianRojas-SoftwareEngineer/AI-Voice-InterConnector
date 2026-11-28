@@ -264,9 +264,7 @@ commands:
     # `target/` es inmutable (el primer `save_cache` gana), un job que falla antes
     # de compilar o a medio compilar persistiría un `target/` vacío o incompleto
     # bajo esa clave para siempre, y ninguna corrida posterior con el mismo
-    # `Cargo.lock` podría guardar el bueno. Ocurrió con `target-v2` `full` de
-    # linux-x64 en v0.20.9 y con `target-v5` de los jobs de pruebas en v0.30.0
-    # (archivos de 16 B tras abortar en la primera invocación de cargo).
+    # `Cargo.lock` podría guardar el bueno.
     parameters:
       variant:
         type: string
@@ -505,7 +503,7 @@ commands:
   # (`cargo xtask pins --check`), que es la primera compilación del workspace,
   # tras restaurar las cachés (y activar `sccache` en los jobs que lo usan),
   # y falla antes de compilar el producto si algún pin diverge del JSON. No genera pasos de instalación: la
-  # CI conserva sus comandos (`apt`, `brew`, MSYS2).
+  # CI conserva sus comandos propios.
   validate_pins:
     description: Valida los pines del pipeline contra packaging/pins.json (falla si divergen)
     steps:
@@ -853,8 +851,8 @@ jobs:
     # igual que test-windows/test-macos/coverage.
     # La caché de target/ evita recompilar dependencias externas, pero los crates
     # propios del workspace (path dependencies) recompilan siempre: el fingerprinting
-    # de cargo para dependencias de ruta local es por mtime en los tres SO
-    # (evidencia v0.20.4: 264/290 Fresh en Linux). sccache por contenido es
+    # de cargo para dependencias de ruta local es por mtime en los tres SO.
+    # sccache por contenido es
     # inmune al mtime y cubre ese residuo con hits de su propio perfil.
     # Las puertas validate_* son la primera compilación del workspace: van tras
     # restaurar las cachés y activar sccache.
@@ -956,8 +954,7 @@ jobs:
     # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
     # os: windows variant: test; sccache os: windows variant: test). La caché de
     # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
-    # la recompilación en Windows es total (evidencia v0.20.4: 0 Fresh / 154
-    # Compiling con hit exacto, incluyendo dependencias externas).
+    # la recompilación en Windows es total, dependencias externas incluidas.
     # Las puertas validate_* son la primera compilación del workspace: van tras
     # restaurar las cachés y configurar sccache.
     executor:
@@ -1125,8 +1122,8 @@ jobs:
     # igual que test-linux/test-windows/coverage.
     # La caché de target/ evita recompilar dependencias externas, pero los crates
     # propios del workspace (path dependencies) recompilan siempre: el fingerprinting
-    # de cargo para dependencias de ruta local es por mtime en los tres SO
-    # (evidencia v0.20.4: 287/313 Fresh en macOS). sccache por contenido es
+    # de cargo para dependencias de ruta local es por mtime en los tres SO.
+    # sccache por contenido es
     # inmune al mtime y cubre ese residuo con hits de su propio perfil.
     # Las puertas validate_* son la primera compilación del workspace: van tras
     # restaurar las cachés y activar sccache.
@@ -1478,7 +1475,7 @@ jobs:
   # con los gates, que son requisito de publish-release (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   build-windows-x64:
-    # Windows x64: bundle nativo con su humo de instalación. No usa Inno Setup aún.
+    # Windows x64: bundle nativo con su humo de instalación.
     executor:
       name: win/server-2022
       version: << pipeline.parameters.windows_image_pin >>

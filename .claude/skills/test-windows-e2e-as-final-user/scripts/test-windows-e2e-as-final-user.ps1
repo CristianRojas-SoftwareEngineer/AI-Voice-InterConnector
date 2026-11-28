@@ -1037,24 +1037,21 @@ function Run-E2E {
             [void](New-Item -ItemType Directory -Path $presetDir)
             $args=@('speech','denoise',$script:Reference,'--output-dir',$presetDir,'--json')
             if($preset -eq 'default'){$args+=@('--preset','default')}
-            $denoiseResult=Invoke-Cli -Arguments $args -Name ('13-denoise-{0}' -f $preset) -Json:$false
-            $lines=@($denoiseResult.Stdout -split '\r?\n'|Where-Object{$_.Trim()})
-            Assert-True ($lines.Count -ge 2) 'Salida JSONL denoise incompleta.'
-            $records=@($lines|ForEach-Object{ConvertFrom-JsonStrict $_})
-            $summary=$records|Where-Object{$_.PSObject.Properties['summary']}
-            Assert-True ($summary -and $summary.summary.failed -eq 0 -and $summary.summary.ok -gt 0) 'Resumen denoise JSONL reporta fallos o cero salidas.'
-            $itemRecords=@($records|Where-Object{$_.PSObject.Properties['output'] -and $_.output})
-            Assert-True ($itemRecords.Count -gt 0) 'JSONL denoise no lista salidas.'
+            $denoiseResult=Invoke-Cli -Arguments $args -Name ('13-denoise-{0}' -f $preset)
+            $envelope=$denoiseResult.Payload
+            Assert-True ($envelope.status -eq 'completed' -and $envelope.summary.failed -eq 0 -and $envelope.summary.ok -gt 0) 'El envelope denoise no está completado o reporta fallos o cero salidas.'
+            $itemRecords=@($envelope.files|Where-Object{$_.output})
+            Assert-True ($itemRecords.Count -gt 0) 'El envelope denoise no lista salidas.'
             $presetOutputs=@()
             foreach($item in $itemRecords){
                 $outputPath=[IO.Path]::GetFullPath([string]$item.output)
-                if(!(Test-Path -LiteralPath $outputPath -PathType Leaf)){throw ('No existe la salida JSONL: {0}' -f $outputPath)}
-                if((Get-Item -LiteralPath $outputPath).Length -le 0){throw ('Salida JSONL vacía: {0}' -f $outputPath)}
+                if(!(Test-Path -LiteralPath $outputPath -PathType Leaf)){throw ('No existe la salida del envelope denoise: {0}' -f $outputPath)}
+                if((Get-Item -LiteralPath $outputPath).Length -le 0){throw ('Salida del envelope denoise vacía: {0}' -f $outputPath)}
                 $presetOutputs+=@($outputPath)
             }
             $script:DenoiseOutputByPreset[$preset]=$presetOutputs
             $script:DenoiseOutput+=@($presetOutputs)
-            Set-SubcaseResult ('13-denoise-'+$preset) 'PASS' -Command ($script:Bin+' '+($args -join ' ')) -ExitCode $denoiseResult.ExitCode -Payload $summary.summary -Evidence @($denoiseResult.StdoutPath,$denoiseResult.StderrPath)+$presetOutputs
+            Set-SubcaseResult ('13-denoise-'+$preset) 'PASS' -Command ($script:Bin+' '+($args -join ' ')) -ExitCode $denoiseResult.ExitCode -Payload $envelope.summary -Evidence @($denoiseResult.StdoutPath,$denoiseResult.StderrPath)+$presetOutputs
         }
         $script:DenoiseOutput=@($script:DenoiseOutput|Select-Object -Unique);Assert-True ($script:DenoiseOutput.Count -ge 2) 'No hay salidas no vacías de ambos presets denoise.'
     }

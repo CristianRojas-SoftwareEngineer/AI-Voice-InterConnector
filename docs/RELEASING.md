@@ -119,10 +119,9 @@ recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
 repo. Si `clean --repo --yes` cierra con «Limpieza programada», `target/` sigue
 borrándose en segundo plano hasta que el comando salga. En Windows, no continúes mientras
 exista `target/` o `target.removal-failed.log`; identifica el proceso que retiene
-el DLL y comprueba que la retirada terminó. En las pruebas de este plan, la
-sesión del editor mantuvo `async_trait-*.dll` abierto a través de `rust-analyzer`:
-cierra el editor, verifica que `target/` desapareció y vuelve a abrir la terminal
-antes de seguir. Si `--app` o el borrado diferido fallan,
+el DLL y comprueba que la retirada terminó. La sesión del editor puede mantener
+`async_trait-*.dll` abierto a través de `rust-analyzer`: cierra el editor,
+verifica que `target/` desapareció y vuelve a abrir la terminal antes de seguir. Si `--app` o el borrado diferido fallan,
 detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
 `CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
 

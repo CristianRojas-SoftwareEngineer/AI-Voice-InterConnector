@@ -1,7 +1,6 @@
 # Especificación funcional y de diseño: clonación de voz desde archivo y micrófono en vivo
 
-> **Estado**: implementada · **Versión base del motor**: v0.37.0 ·
-> **Repositorio**: `AI-Voice-InterConnector`
+> **Estado**: implementada · **Repositorio**: `AI-Voice-InterConnector`
 
 Este documento especifica funcional y técnicamente la extensión del comando
 `voice clone` en el motor **AI Voice-InterConnector** para admitir captura de audio
@@ -142,33 +141,33 @@ El motor ya cuenta con los componentes necesarios:
 
 ### 5.1 Requisitos funcionales
 
-| ID | Requisito |
+| Requisito | Descripción |
 | --- | --- |
-| **RF-01** | `voice clone` debe aceptar el grupo mutuamente excluyente y requerido `input`: `--speech-reference <archivo>` (`-s`) o `--mic`. |
-| **RF-02** | Omitir tanto `--speech-reference` como `--mic`, o suministrar ambos simultáneamente, debe fallar con `ExitCode::InvalidInput` (2, `usage_error`). |
-| **RF-03** | El flag `--duration <segs>` debe ser opcional y aceptarse únicamente junto a `--mic` (`conflicts_with = "speech_reference"`). Usarlo con `--speech-reference` debe fallar con exit 2 (`usage_error`). |
-| **RF-04** | `--duration=0` falla con exit 2 (`usage_error`); valores `> 30` fallan con exit 2 (`audio_too_long`). La duración es un objetivo de captura, no una cantidad exacta de muestras. Micrófono >30 s a `capture_rate` Hz (48 kHz con `--denoise`, 24 kHz sin él) se recorta; una captura más corta no se rellena. |
-| **RF-05** | En terminal interactiva (TTY), `--mic` sin `--duration` debe iniciar grabación push-to-talk (hasta pulsar Enter o el menor techo entre 30 s y `AVI_PUSH_TO_TALK_MAX_SECS`). El techo de entorno se valida antes de abrir el dispositivo. |
-| **RF-06** | En entorno no interactivo (no-TTY), `--mic` sin `--duration` debe abortar antes de resolver destino o abrir el micrófono con exit 2 (`usage_error`). |
-| **RF-07** | Al iniciar la grabación de micrófono, se debe mostrar por `stderr` la etapa `capturing` (con terminal, `● Grabando m:ss / m:ss` con medidor de nivel; sin ella, `Grabando (máximo m:ss)…`), nunca permanecer en espera silenciosa. Si la grabación no contiene voz (el tramo de 100 ms más fuerte no supera −43 dBFS), se avisa sin interrumpir el comando. |
-| **RF-08** | Si la captura de micrófono entrega cero muestras, debe salir con exit 2 (`empty_audio`); no se detecta ni rechaza silencio. |
-| **RF-09** | Si el sistema no tiene dispositivo de entrada predeterminado, debe salir con exit 3 (`no_input_device`); si no tiene backend de audio, con exit 3 (`audio_backend_unavailable`); si el dispositivo de entrada falla por otra causa (sin permisos, error de backend `cpal` al abrir o durante la captura), con exit 10 (`transcription_failed`). |
-| **RF-10** | En la ruta daemon, archivo envía sus bytes WAV originales y mic envía un WAV mono/int16 (48 kHz con `--denoise`, 24 kHz sin él) codificado una vez desde PCM; ambos usan `audio_b64` en el `POST /voices/clone` existente. |
-| **RF-11** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
-| **RF-12** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
-| **RF-13** | Se valida el nombre antes de capturar. Sin `--force`, `VoiceStore::exists` detecta la colisión antes de capturar o leer la referencia, en las dos rutas, porque la CLI y el daemon comparten el directorio de datos; el daemon conserva su comprobación como defensa. Con `--force`, re-clonar reemplaza la voz y sus audios sintetizados: si la voz tiene audios sintetizados, la CLI pide la confirmación destructiva antes de capturar, en las dos rutas, y sin terminal exige `--yes` (si falta, exit 2 `confirmation_required` sin cambiar nada). El reemplazo lo hace `avi_store::replace_voice`, que borra `speech/<voz>/` antes de publicar la referencia nueva. Una voz de fábrica (`default`) no se clona, con o sin `--force`: la CLI la rechaza tras validar el nombre con exit 2 `cannot_clone_default`, antes de abrir el micrófono o leer la referencia, y el daemon con `400` `cannot_clone_default`, porque su contenido es el asset embebido que la inicialización del almacén restituye. |
-| **RF-14** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"status": "cloned", "name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "removed_speech": ["<etiqueta>", ...], "context": {...}, "total_ms": N, "stages": [...], "warnings": [...], "schema_version": "7"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
+| **Grupo de entrada** | `voice clone` debe aceptar el grupo mutuamente excluyente y requerido `input`: `--speech-reference <archivo>` (`-s`) o `--mic`. |
+| **Entrada ausente o duplicada** | Omitir tanto `--speech-reference` como `--mic`, o suministrar ambos simultáneamente, debe fallar con `ExitCode::InvalidInput` (2, `usage_error`). |
+| **Flag `--duration`** | El flag `--duration <segs>` debe ser opcional y aceptarse únicamente junto a `--mic` (`conflicts_with = "speech_reference"`). Usarlo con `--speech-reference` debe fallar con exit 2 (`usage_error`). |
+| **Rango de `--duration`** | `--duration=0` falla con exit 2 (`usage_error`); valores `> 30` fallan con exit 2 (`audio_too_long`). La duración es un objetivo de captura, no una cantidad exacta de muestras. Micrófono >30 s a `capture_rate` Hz (48 kHz con `--denoise`, 24 kHz sin él) se recorta; una captura más corta no se rellena. |
+| **Grabación push-to-talk** | En terminal interactiva (TTY), `--mic` sin `--duration` debe iniciar grabación push-to-talk (hasta pulsar Enter o el menor techo entre 30 s y `AVI_PUSH_TO_TALK_MAX_SECS`). El techo de entorno se valida antes de abrir el dispositivo. |
+| **Micrófono sin terminal** | En entorno no interactivo (no-TTY), `--mic` sin `--duration` debe abortar antes de resolver destino o abrir el micrófono con exit 2 (`usage_error`). |
+| **Etapa de captura** | Al iniciar la grabación de micrófono, se debe mostrar por `stderr` la etapa `capturing` (con terminal, `● Grabando m:ss / m:ss` con medidor de nivel; sin ella, `Grabando (máximo m:ss)…`), nunca permanecer en espera silenciosa. Si la grabación no contiene voz (el tramo de 100 ms más fuerte no supera −43 dBFS), se avisa sin interrumpir el comando. |
+| **Captura vacía** | Si la captura de micrófono entrega cero muestras, debe salir con exit 2 (`empty_audio`); no se detecta ni rechaza silencio. |
+| **Dispositivo de entrada** | Si el sistema no tiene dispositivo de entrada predeterminado, debe salir con exit 3 (`no_input_device`); si no tiene backend de audio, con exit 3 (`audio_backend_unavailable`); si el dispositivo de entrada falla por otra causa (sin permisos, error de backend `cpal` al abrir o durante la captura), con exit 10 (`transcription_failed`). |
+| **Ruta daemon** | En la ruta daemon, archivo envía sus bytes WAV originales y mic envía un WAV mono/int16 (48 kHz con `--denoise`, 24 kHz sin él) codificado una vez desde PCM; ambos usan `audio_b64` en el `POST /voices/clone` existente. |
+| **Ruta local** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
+| **Limpieza con `--denoise`** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
+| **Colisión de nombre y `--force`** | Se valida el nombre antes de capturar. Sin `--force`, `VoiceStore::exists` detecta la colisión antes de capturar o leer la referencia, en las dos rutas, porque la CLI y el daemon comparten el directorio de datos; el daemon conserva su comprobación como defensa. Con `--force`, re-clonar reemplaza la voz y sus audios sintetizados: si la voz tiene audios sintetizados, la CLI pide la confirmación destructiva antes de capturar, en las dos rutas, y sin terminal exige `--yes` (si falta, exit 2 `confirmation_required` sin cambiar nada). El reemplazo lo hace `avi_store::replace_voice`, que borra `speech/<voz>/` antes de publicar la referencia nueva. Una voz de fábrica (`default`) no se clona, con o sin `--force`: la CLI la rechaza tras validar el nombre con exit 2 `cannot_clone_default`, antes de abrir el micrófono o leer la referencia, y el daemon con `400` `cannot_clone_default`, porque su contenido es el asset embebido que la inicialización del almacén restituye. |
+| **Envelope `--json`** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"status": "cloned", "name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "removed_speech": ["<etiqueta>", ...], "context": {...}, "total_ms": N, "stages": [...], "warnings": [...], "schema_version": "7"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
 
 ### 5.2 Requisitos no funcionales
 
-| ID | Requisito |
+| Requisito | Descripción |
 | --- | --- |
-| **RNF-01** | **Cero dependencias externas adicionales**: Reutilizar `avi-audio` y `cpal` existentes sin añadir crates nuevos. |
-| **RNF-02** | **Estabilidad del protocolo IPC**: el clonado no altera el protocolo IPC del daemon ni su versión de esquema. El endpoint `POST /voices/clone` sigue recibiendo `audio_b64`, que es audio de **entrada**; el `audio_b64` que sí desapareció del protocolo es el de **salida** de `/synthesize` y `/dub`, sustituido por eventos `audio`, y no afecta a este endpoint. |
-| **RNF-03** | El WAV scratch local se limpia por RAII en salidas controladas. Una terminación forzosa o un fallo del filesystem puede dejar residuos para el barrido posterior; el WAV no se guarda en `VoiceStore`. |
-| **RNF-04** | La captura ocurre en CLI; en destino daemon, el WAV se transmite al daemon mediante `POST /voices/clone`. No se conserva el WAV en `VoiceStore`; `reference.qvoice` sí es un dato derivado persistente. |
-| **RNF-05** | **Paridad multiplataforma**: La captura mantiene el mismo contrato CLI; la disponibilidad de dispositivos y E2E se verifica en las plataformas accesibles. |
-| **RNF-06** | La conversión PCM → WAV → base64 puede medirse como observación informativa; 20 ms no es un umbral de aceptación ni de CI. |
+| **Cero dependencias externas adicionales** | Reutilizar `avi-audio` y `cpal` existentes sin añadir crates nuevos. |
+| **Estabilidad del protocolo IPC** | El clonado no altera el protocolo IPC del daemon ni su versión de esquema. El endpoint `POST /voices/clone` recibe `audio_b64`, que es audio de **entrada**; `/synthesize` y `/dub` entregan el audio de **salida** en eventos `audio`. |
+| **Limpieza del WAV scratch** | El WAV scratch local se limpia por RAII en salidas controladas. Una terminación forzosa o un fallo del filesystem puede dejar residuos para el barrido posterior; el WAV no se guarda en `VoiceStore`. |
+| **Lugar de la captura** | La captura ocurre en CLI; en destino daemon, el WAV se transmite al daemon mediante `POST /voices/clone`. No se conserva el WAV en `VoiceStore`; `reference.qvoice` sí es un dato derivado persistente. |
+| **Paridad multiplataforma** | La captura mantiene el mismo contrato CLI; la disponibilidad de dispositivos y E2E se verifica en las plataformas accesibles. |
+| **Coste de la conversión a base64** | La conversión PCM → WAV → base64 puede medirse como observación informativa; 20 ms no es un umbral de aceptación ni de CI. |
 
 ---
 
@@ -466,23 +465,23 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 
 ## 11. Criterios de aceptación
 
-| ID | Dado | Cuando | Entonces |
+| Criterio | Dado | Cuando | Entonces |
 | --- | --- | --- | --- |
-| **AC-01** | La CLI `ai-voice-interconnector` | Se ejecuta `voice clone --help` | La ayuda documenta el grupo `[--speech-reference <archivo> | --mic]` y `--duration`. |
-| **AC-02** | Un entorno no-TTY (CI / pipe) | Se ejecuta `voice clone --name v1 --mic` sin `--duration` | Sale con exit `2` (`usage_error`) antes de abrir el micrófono. |
-| **AC-03** | Una invocación con duración excesiva | Se ejecuta `voice clone --name v1 --mic --duration 31` | Sale con exit `2` (`audio_too_long`) sin capturar audio. |
-| **AC-04** | Ambas fuentes suministradas | Se ejecuta `voice clone --name v1 -s ref.wav --mic` | Sale con exit `2` (`usage_error`) por exclusión mutua. |
-| **AC-05** | `--duration` con archivo | Se ejecuta `voice clone --name v1 -s ref.wav --duration 10` | Sale con exit `2` (`usage_error`) por incompatibilidad de flags. |
-| **AC-06** | TTY y dispositivos/modelos disponibles | Se ejecuta `voice clone --name v1 --mic` | Anuncia `capturing`, termina con Enter o el menor límite efectivo y completa el clonado. La E2E se ejecuta solo en hosts con dispositivo. |
-| **AC-07** | Una captura fija de 5 s | Se ejecuta `voice clone --name v1 --mic --duration 5` | La duración es objetivo; el PCM resultante se limita a 30 s (`30 * capture_rate` muestras), no se rellena y alimenta el flujo convergente de clonado. |
-| **AC-08** | Una voz existente en el store | Se clona con `--mic` sin `--force`, por cualquier ruta | Sale con exit `6` (`voice_exists`) antes de grabar. |
-| **AC-09** | Una voz ya existente con audios sintetizados guardados | Se clona con `--mic --force --yes` por daemon | Sobrescribe la voz, borra sus audios sintetizados (`removed_speech` los nombra) e inicia warm-on-clone (exit 0); la siguiente síntesis de la voz recarga el residente. Sin terminal y sin `--yes` sale con exit `2` (`confirmation_required`) sin grabar ni cambiar nada. La ruta local no mantiene un residente que precalentar. |
-| **AC-10** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ status: "cloned", name, speech, precomputed, removed_speech, context, total_ms, stages, warnings, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |
-| **AC-11** | La ruta local explícita | Se ejecuta `voice clone --name v1 --mic --duration 5 --no-daemon` | Genera `reference.qvoice`, elimina temporales de scratch y emite `precomputed: false`. |
-| **AC-12** | La feature `native-denoise` | Se pasa `--denoise` con `--mic` | El audio capturado se procesa con DPDFNet antes de la extracción de x-vector. |
-| **AC-13** | Un sistema sin dispositivo de entrada predeterminado, o con uno inaccesible | Se ejecuta `--mic` | Sin dispositivo sale con exit `3` (`no_input_device`); con uno inaccesible, con exit `10` (`transcription_failed`); en ambos casos con mensaje descriptivo. |
-| **AC-14** | Una clonación local completada con `--mic` | Se inspecciona el scratch tras una salida controlada | Existe `<data_dir>/voices/v1/reference.qvoice` y se limpió el WAV scratch; terminación forzosa o fallo filesystem puede dejarlo para barrido posterior. |
-| **AC-15** | WAV pregrabado y captura del mismo locutor, con modelos y dispositivo disponibles | Se clonan y sintetizan mediante ambas rutas | Mismo contrato y síntesis funcional; no se espera identidad de las tomas ni igualdad binaria de `.qvoice`. |
+| **Ayuda del grupo de entrada** | La CLI `ai-voice-interconnector` | Se ejecuta `voice clone --help` | La ayuda documenta el grupo `[--speech-reference <archivo> | --mic]` y `--duration`. |
+| **Micrófono sin terminal ni duración** | Un entorno no-TTY (CI / pipe) | Se ejecuta `voice clone --name v1 --mic` sin `--duration` | Sale con exit `2` (`usage_error`) antes de abrir el micrófono. |
+| **Duración excesiva** | Una invocación con duración excesiva | Se ejecuta `voice clone --name v1 --mic --duration 31` | Sale con exit `2` (`audio_too_long`) sin capturar audio. |
+| **Ambas fuentes** | Ambas fuentes suministradas | Se ejecuta `voice clone --name v1 -s ref.wav --mic` | Sale con exit `2` (`usage_error`) por exclusión mutua. |
+| **`--duration` con archivo** | `--duration` con archivo | Se ejecuta `voice clone --name v1 -s ref.wav --duration 10` | Sale con exit `2` (`usage_error`) por incompatibilidad de flags. |
+| **Grabación interactiva** | TTY y dispositivos/modelos disponibles | Se ejecuta `voice clone --name v1 --mic` | Anuncia `capturing`, termina con Enter o el menor límite efectivo y completa el clonado. La E2E se ejecuta solo en hosts con dispositivo. |
+| **Captura de duración fija** | Una captura fija de 5 s | Se ejecuta `voice clone --name v1 --mic --duration 5` | La duración es objetivo; el PCM resultante se limita a 30 s (`30 * capture_rate` muestras), no se rellena y alimenta el flujo convergente de clonado. |
+| **Voz existente sin `--force`** | Una voz existente en el store | Se clona con `--mic` sin `--force`, por cualquier ruta | Sale con exit `6` (`voice_exists`) antes de grabar. |
+| **Re-clonado con audios sintetizados** | Una voz ya existente con audios sintetizados guardados | Se clona con `--mic --force --yes` por daemon | Sobrescribe la voz, borra sus audios sintetizados (`removed_speech` los nombra) e inicia warm-on-clone (exit 0); la siguiente síntesis de la voz recarga el residente. Sin terminal y sin `--yes` sale con exit `2` (`confirmation_required`) sin grabar ni cambiar nada. La ruta local no mantiene un residente que precalentar. |
+| **Salida `--json`** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ status: "cloned", name, speech, precomputed, removed_speech, context, total_ms, stages, warnings, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |
+| **Ruta local explícita** | La ruta local explícita | Se ejecuta `voice clone --name v1 --mic --duration 5 --no-daemon` | Genera `reference.qvoice`, elimina temporales de scratch y emite `precomputed: false`. |
+| **Limpieza con `native-denoise`** | La feature `native-denoise` | Se pasa `--denoise` con `--mic` | El audio capturado se procesa con DPDFNet antes de la extracción de x-vector. |
+| **Dispositivo de entrada ausente o inaccesible** | Un sistema sin dispositivo de entrada predeterminado, o con uno inaccesible | Se ejecuta `--mic` | Sin dispositivo sale con exit `3` (`no_input_device`); con uno inaccesible, con exit `10` (`transcription_failed`); en ambos casos con mensaje descriptivo. |
+| **Scratch tras clonación local** | Una clonación local completada con `--mic` | Se inspecciona el scratch tras una salida controlada | Existe `<data_dir>/voices/v1/reference.qvoice` y se limpió el WAV scratch; terminación forzosa o fallo filesystem puede dejarlo para barrido posterior. |
+| **Paridad entre archivo y captura** | WAV pregrabado y captura del mismo locutor, con modelos y dispositivo disponibles | Se clonan y sintetizan mediante ambas rutas | Mismo contrato y síntesis funcional; no se espera identidad de las tomas ni igualdad binaria de `.qvoice`. |
 
 ---
 

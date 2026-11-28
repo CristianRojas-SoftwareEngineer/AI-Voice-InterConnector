@@ -179,7 +179,7 @@ Cada comando mostraba su propio bloque plano de líneas: no decía en qué paso 
 - **Temperatura de síntesis 0,45:** la de producción pasa de 0,35 a 0,45, la nueva temperatura por defecto del motor `qwen-tts-engine` 1.4.0. Es la que menos voz crujiente añade al cierre de las frases y la que suena más natural a la escucha. Cambia el audio de toda síntesis sin `--temperature`.
 - **Motor `qwen-tts-engine` 1.4.0:** queda fijado como versión del motor, y `SOURCE-OFFER.md` apunta a su tag y a su archivo de fuentes.
 - **Dependencias:** se retira `indicatif` de `avi-lifecycle`.
-- **Pruebas sobre la documentación retiradas:** se eliminan las dos pruebas que leían las guías y el contrato para vigilar versiones y flags, y los envelopes de referencia de `translate --daemon` y de `daemon stop` con la parada sin concluir pasan a ser los reales y se comparan en toda su forma. La documentación se mantiene al día en el cierre de cada cambio.
+- **Pruebas sobre la documentación retiradas:** se eliminan las dos pruebas que leían las guías y el contrato para vigilar versiones y flags, y los envelopes de referencia de `translate --daemon` y de `daemon stop` con la parada sin concluir pasan a ser los reales y se comparan en toda su forma.
 
 ### Corregido
 

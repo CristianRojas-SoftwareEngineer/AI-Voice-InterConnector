@@ -1,8 +1,8 @@
 # Especificación funcional: ciclo de vida de la aplicación y del entorno de desarrollo
 
-> **Estado**: implementada · **Versión base**: v0.23.1 · **Fecha**: 2026-09-25
+> **Estado**: implementada
 
-> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. El proyecto no está distribuido: no hay instalaciones previas, de modo que no se concede ningún mecanismo de transición.
+> **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0: sin alias, flags deprecados ni migraciones; las rutas pueden cambiar entre versiones.
 
 Este documento especifica cómo se **instala, actualiza, desinstala y limpia** `ai-voice-interconnector` en el entorno del usuario final, y cómo se **prepara, actualiza y limpia** el entorno del desarrollador, con el mismo comportamiento en los cuatro targets de compilación. Fija la arquitectura y el contrato funcional del motor de ciclo de vida del proyecto.
 
@@ -24,7 +24,6 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 - [12. Estrategia de pruebas](#12-estrategia-de-pruebas)
 - [13. Papel de la documentación](#13-papel-de-la-documentación)
 - [14. Criterios de aceptación](#14-criterios-de-aceptación)
-- [15. Decisiones cerradas](#15-decisiones-cerradas)
 
 ---
 
@@ -166,7 +165,7 @@ AI-Voice-InterConnector/
 └── .cargo/config.toml            # alias `cargo xtask` = `run -p xtask --`
 ```
 
-**Único archivo nuevo en la raíz:** `rust-toolchain.toml`. Es la convención estándar de Rust y rustup solo la reconoce en la raíz; a cambio, instala y actualiza automáticamente la versión de Rust fijada para cualquier desarrollador.
+**`rust-toolchain.toml` es el único archivo de la raíz de este diseño.** Es la convención estándar de Rust y rustup solo la reconoce en la raíz; a cambio, instala y actualiza automáticamente la versión de Rust fijada para cualquier desarrollador.
 
 ### 5.4 Superficie de comandos
 
@@ -778,12 +777,11 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la poda que usa `self update` |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, los chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` | Guía de compilación: comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor`. No contiene análisis de CI |
-| `CONTRIBUTING.md` | Guía de contribución: flujo de trabajo, con el flujo de ramas trunk-based sobre `main` absorbido, y condiciones para proponer cambios |
+| `CONTRIBUTING.md` | Guía de contribución: flujo de trabajo, con el flujo de ramas trunk-based sobre `main`, y condiciones para proponer cambios |
 | `docs/CI.md` | Análisis de por qué el pipeline de CI tiene la forma que tiene y cómo se comportan sus cachés; la definición ejecutable es la configuración del pipeline |
 | `.github/PULL_REQUEST_TEMPLATE.md` | Plantilla de descripción de los pull requests: problema, verificación y comprobaciones previas |
-| `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
-| `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el árbol. Su contenido vigente está en `docs/DISTRIBUTION.md` |
-| `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto, comandos y UX de audio interactivo; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
+| `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft |
+| `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto, comandos y UX de audio interactivo; su árbol describe las piezas vigentes |
 | `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo |
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
 | `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
@@ -843,18 +841,4 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 **Organización**
 
-28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, que los crates consumen directamente—. La fuente se movió a `avi-shared`, donde las rutas son datos que también consume `xtask` sin red ni TLS; el listón no baja por el cambio de crate, porque la exigencia sigue siendo **una sola definición de rutas**, y la unicidad ahora se comprueba en el sitio donde vive la definición.
-
-## 15. Decisiones cerradas
-
-Cerradas en el gate de alcance de la orquestación. El texto de cada sección affected ya asume la opción elegida.
-
-| Id | Decisión | Cerrada como | Motivo |
-|---|---|---|---|
-| D1 | URLs antiguas del one-liner (`raw…/main/install-*.sh`) | Retiradas en el corte, sin scripts puente | Proyecto pre-1.0, URLs nuevas estables y cero piezas en la raíz |
-| D2 | PATH persistente en Linux y macOS | Modificado por defecto, anunciado en el resumen, con `--no-modify-path` y reversión exacta | Paridad con Windows, menos fricción en macOS y reversibilidad garantizada por el recibo |
-| D3 | Ubicación de los modelos | Caché exclusiva de la aplicación, con `HF_HUB_CACHE`/`HF_HOME` como opción de quien quiera compartir | Limpieza y desinstalación seguras borrando directorios completos, sin tocar `xet` ni `.locks` compartidos; se pierde la deduplicación con otras herramientas HF, un caso marginal |
-| D4 | Datos en Windows | `%LOCALAPPDATA%\ai-voice-interconnector\data` | Los datos pesados y el estado ligado a la máquina (`daemon.pid`) no deben sincronizarse con perfiles móviles |
-| D5 | Capa por defecto de `cargo xtask clean` | Solo el repositorio | Menor sorpresa, como `cargo clean`: borrar la instalación del usuario y los modelos requiere pedirlo explícitamente |
-| D6 | Daemon tras `self update` | El resumen indica cómo reiniciarlo | El reinicio automático exigiría persistir los parámetros de arranque; se puede añadir después sin romper el contrato |
-| D7 | Firma de `SHA256SUMS.txt` | Fase diferida, fuera de esta implementación | Aporta autenticidad en `self update`, pero no bloquea la consolidación; requiere gestionar una clave en la CI |
+28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, que los crates consumen directamente—. Las rutas se definen únicamente en `avi-shared`, donde son datos que también consume `xtask` sin red ni TLS; la exigencia es **una sola definición de rutas**, y su unicidad se comprueba en el sitio donde vive la definición.

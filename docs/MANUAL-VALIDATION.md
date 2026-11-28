@@ -399,7 +399,7 @@ ai-voice-interconnector speech synthesize --text "Otra toma." --label demo_loop 
 
 ### 9.3 Progreso de la instalación interactiva
 
-🖥️ · conexión para descargar los cinco modelos · Windows PowerShell en una ventana nueva y sin redirigir la salida. Antes de empezar, la instalación anterior debe haberse desinstalado con **su propio binario** y la caché de modelos debe estar vacía. Si existe una instalación 0.31.x, `self update` no puede leer su recibo desde la 0.32.0: usa el binario 0.31.x para desinstalar y después el one-liner de la nueva versión.
+🖥️ · conexión para descargar los cinco modelos · Windows PowerShell en una ventana nueva y sin redirigir la salida. Antes de empezar, la instalación anterior debe desinstalarse con su propio binario y la caché de modelos debe estar vacía.
 
 Para validar el procedimiento de release desde cero en la máquina de desarrollo
 (sin instalar el artefacto publicado), sigue el apartado

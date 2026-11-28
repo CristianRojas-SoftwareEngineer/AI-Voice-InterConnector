@@ -54,7 +54,7 @@ El orden es el de [`self install`](../../specs/LIFECYCLE.md#83-self-install) y e
 8. **Integración de `PATH`** (etapa `Integración en el PATH`, que no existe con `--no-modify-path`; su nota dice `se añadió <bin>` y bajo ella un `⚠` avisa de que las terminales que ya estaban abiertas no verán el cambio hasta reiniciarse) ([contrato de `self`](../CONTRACT.md#self-install-self-update-y-self-uninstall) e [integración de PATH](../../specs/LIFECYCLE.md#831-integración-de-path)). En Unix el `PATH` se modifica **por defecto** y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Escribir el recibo** de forma atómica (etapa `Recibo`).
 10. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección (todos los modelos, el Base de clonado incluido) según el estado real del almacén, sin repetir la confirmación, con una etapa `Descarga` por modelo pendiente (ver [el progreso de `setup`](SETUP.md#modelos-provisionados-model_revisions)). El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
-11. **Cierre**, por stderr: tras el separador, `✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en <total>`), y **nada más**: ni resumen ni consejo bajo el cierre. Las notas de cada etapa llevan lo que antes se resumía al final: la ruta del programa en `Copia`, `· reemplaza <versión>` en `Reemplazo` y `se añadió <bin>` en la del `PATH`. El plan previo a la confirmación pregunta `¿Instalar el programa?` (o `¿Reparar la instalación?`), y con el `PATH` ya integrado dice `PATH: ya está en el PATH de tu usuario; no se modifica.`
+11. **Cierre**, por stderr: tras el separador, `✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en <total>`), y **nada más**: ni resumen ni consejo bajo el cierre. Las notas de cada etapa llevan la ruta del programa en `Copia`, `· reemplaza <versión>` en `Reemplazo` y `se añadió <bin>` en la del `PATH`. El plan previo a la confirmación pregunta `¿Instalar el programa?` (o `¿Reparar la instalación?`), y con el `PATH` ya integrado dice `PATH: ya está en el PATH de tu usuario; no se modifica.`
 
 La instalación con la integración en el `PATH` y la que reemplaza una versión anterior no tienen muestra en este documento, porque dependen de modificar el `PATH` del usuario y de tener una versión previa instalada; se describen aquí en prosa.
 
@@ -171,7 +171,7 @@ Son los datos que el sistema operativo guarda por su cuenta cuando se usa AVI: p
   reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged\C:#Users#<usuario>#AppData#Local#Programs#ai-voice-interconnector#ai-voice-interconnector.exe" /f
   ```
 
-- **Reglas del firewall.** Solo las crearon versiones anteriores a la 0.26.0, cuyo motor escuchaba fuera de `127.0.0.1`; desde entonces el motor residente escucha solo en `127.0.0.1` y no se crean reglas nuevas. En un **Símbolo del sistema** abierto como administrador:
+- **Reglas del firewall.** AVI no crea reglas de firewall: el motor residente escucha solo en `127.0.0.1`. Si existe una regla para el ejecutable del motor, se elimina en un **Símbolo del sistema** abierto como administrador:
 
   ```text
   netsh advfirewall firewall delete rule name=all program="%LOCALAPPDATA%\Programs\ai-voice-interconnector\vendor\qwen3-tts\qwen_tts.exe"

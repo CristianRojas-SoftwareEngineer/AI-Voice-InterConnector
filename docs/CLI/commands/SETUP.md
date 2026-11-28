@@ -18,7 +18,7 @@ ai-voice-interconnector setup [--force-update] [--yes|-y] [--json]
 | `--yes`, `-y` | `false` | Omite la confirmación única (la destructiva de `--force-update` o la de tamaño) |
 | `--json` | `false` | Global; emite el payload en stdout |
 
-No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voice-cloning` (el modelo Base de clonado `qwen3-tts-0.6b-base` se provisiona siempre): pasarlos falla como argumento desconocido con exit 2. Tampoco existe `--language`: el conjunto provisionado es fijo (es+en offline completo desde el primer uso), así que la provisión es determinista para la instalación por defecto.
+El conjunto provisionado es fijo: `parakeet-tdt-v3` y el modelo Base de clonado `qwen3-tts-0.6b-base` se provisionan siempre, con es+en offline completo desde el primer uso, así que la provisión es determinista para la instalación por defecto.
 
 ---
 
@@ -108,9 +108,9 @@ Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo 
 
 ## Poda de revisiones obsoletas
 
-**La poda de las revisiones obsoletas de los repos propios** —lo que pide [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)— **está vigente**, porque la necesita una actualización, no una instalación.
+`setup` poda las revisiones propias obsoletas tras provisionar —lo que pide [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)—, porque la necesita una actualización, no una instalación.
 
-La selección es siempre la tabla de pines completa: no hay modelos opcionales, así que no se persiste ninguna selección. Tras el reemplazo, el `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas (`selection`/`purge`), con R3 en raíz compartida. **En la carpeta de modelos exclusiva**, que es de la aplicación y solo contiene modelos fijados, la poda borra además todo directorio `models--*` que no corresponda a ningún pin de la tabla y su carpeta en `.locks`: un modelo que una versión deja de fijar (por ejemplo, el CustomVoice que dejaron las instalaciones anteriores a la 0.46.0) se retira en el siguiente `setup`, que también encadenan `self install` y `self update`. No toca `xet`, el resto de `.locks` ni entradas que no empiecen por `models--`. **En una caché compartida** solo se podan las revisiones de los repos fijados (R3). La confirmación de tamaño y `called_from_lifecycle` siguen vigentes y la idempotencia se conserva.
+La selección es siempre la tabla de pines completa: no hay modelos opcionales, así que no se persiste ninguna selección. Tras el reemplazo, el `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas (`selection`/`purge`), con R3 en raíz compartida. **En la carpeta de modelos exclusiva**, que es de la aplicación y solo contiene modelos fijados, la poda borra además todo directorio `models--*` que no corresponda a ningún pin de la tabla y su carpeta en `.locks`: un modelo que una versión deja de fijar se retira en el siguiente `setup`, que también encadenan `self install` y `self update`. No toca `xet`, el resto de `.locks` ni entradas que no empiecen por `models--`. **En una caché compartida** solo se podan las revisiones de los repos fijados (R3). La confirmación de tamaño y `called_from_lifecycle` siguen vigentes y la idempotencia se conserva.
 
 ---
 

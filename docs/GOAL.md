@@ -4,7 +4,7 @@
 
 Este documento es la **especificación ideal** de `ai-voice-interconnector`: describe el producto meta que guía todo el desarrollo — un sistema de voz **100% local** que cubre síntesis con clonación en **español latinoamericano**, transcripción de audio a texto, traducción `es↔en` y doblaje voz→voz, consumible por línea de comandos desde cualquier lenguaje, y con una experiencia de usuario **equivalente en Windows, Linux y macOS**.
 
-El alcance se amplió durante el desarrollo: el producto nació como un sistema TTS y hoy cubre también STT, traducción y doblaje. Este documento describe el ideal **vigente**; el historial de cuándo se incorporó cada superficie está en [`CHANGELOG.md`](../CHANGELOG.md).
+El producto cubre síntesis con clonación, transcripción, traducción `es↔en` y doblaje voz→voz. Este documento describe el ideal **vigente**.
 
 Es la fuente de verdad contra la que se evalúa cualquier cambio: si una propuesta acerca el proyecto a lo aquí especificado, avanza el goal; si no, queda fuera de alcance. Para mantener esa función sin frenar el desarrollo, el documento se declara en **dos partes**:
 
@@ -189,7 +189,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 <!-- Los criterios 2, 3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), más una verificación en sala limpia del artefacto de Linux (los cuatro jobs `verify-portability`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.37.3` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los seis modelos (5,9 GB, incluyendo `dpdfnet8`), ciclo de vida del daemon, clonación de voz (vía archivo y vía micrófono), síntesis con `WER = 0.0` en el gate de texto corto (`"Hola mundo"`, voz `default` y voz clonada), limpieza de audio (`speech denoise`) y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
+1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado en Windows 11 x64: instalación por el one-liner `irm | iex` con checksum verificado, provisión de los cinco modelos (`dpdfnet8` incluido), ciclo de vida del daemon, clonación de voz (vía archivo y vía micrófono), síntesis con `WER = 0.0` en el gate de texto corto (`"Hola mundo"`, voz `default` y voz clonada), limpieza de audio (`speech denoise`) y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado en el manifiesto del bundle (`min_os`, ver [versión mínima de macOS](BUILD.md#versión-mínima-de-macos) y los [requisitos](../README.md#requisitos)) (Apple Silicon; Mac Intel no soportado) (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
@@ -199,7 +199,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
 10. [ ] **Equivalencia funcional completa entre los 3 SO**: las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Quedan dos brechas de **experiencia**, ambas diferidas por diseño al [goal a largo plazo](#goal-a-largo-plazo) y ninguna bloqueante por sí sola: la *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) y la *provisión de modelos en los canales que no invocan `self install`* (el Cask de Homebrew y la descarga manual, donde `setup` se ofrece en vez de encadenarse). La marca de este criterio queda pendiente de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
-11. [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz funcionan de punta a punta en local — validado sobre `v0.37.3` en Windows 11 x64 (transcripción, traducción y doblaje vía daemon y vía directa)
+11. [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz funcionan de punta a punta en local — validado en Windows 11 x64 (transcripción, traducción y doblaje vía daemon y vía directa)
 12. [x] Toda la inferencia está implementada para CPU y no requiere GPU
 
 #### Validación E2E
@@ -210,7 +210,7 @@ Además, los cuatro jobs **`verify-portability`** abren el artefacto de Linux qu
 
 Fuera del pipeline, la validación se reparte así:
 
-- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → `speech transcribe`/`translate`/`speech dub` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.37.3` está en el [criterio 1](#criterios-de-aceptación).
+- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → `speech transcribe`/`translate`/`speech dub` → desinstalar, y registrando el resultado. El resultado de la validación está en el [criterio 1](#criterios-de-aceptación).
 - **Linux y macOS**: dependen de **feedback de usuarios reales** que prueben la instalación y ejecución en sus equipos. Ese feedback (positivo o negativo) es la entrada de issues que cierra el circuito y guía correcciones específicas por plataforma.
 
 El recorrido concreto —la secuencia ordenada de comandos que ejercita toda la superficie de la CLI en este proceso manual— está en [docs/MANUAL-VALIDATION.md](MANUAL-VALIDATION.md).

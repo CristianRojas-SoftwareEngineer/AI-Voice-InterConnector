@@ -31,7 +31,7 @@ subcomandos delegables (`transcribe`, `synthesize`, `say` y `dub`), no de
 | `speech remove` | No | Sí |
 | `speech denoise` | No | Sí; archivos locales de audio/vídeo |
 
-`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global emite un único envelope con `status` (`completed`, o `planned` en la simulación), `files`, `summary` y las claves comunes. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
+`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global emite un único envelope con `status` (`completed`, o `planned` en la simulación), `files`, `summary` y las claves comunes. El modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
 
 `list`/`play`/`remove` son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP: no declaran `--daemon` ni `--no-daemon` y, si se les pasa
@@ -121,7 +121,7 @@ Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet pro
 | `--verbose` | Aumenta el detalle de progreso |
 | `--json` global | Emite un único envelope en stdout (`status`, `files`, `summary`, `context`, `total_ms`, `stages` y `warnings`); la ejecución real publica el WAV/medio indicado por `output` |
 
-El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline migrado. No se amplía la matriz de contenedores ni códecs.
+El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline del crate `denoise`. No se amplía la matriz de contenedores ni códecs.
 
 Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline elimina temporales y no publica una salida parcial. **Límite verificado:** la señal se atiende al cerrar, no interrumpe el DSP en curso: en las corridas medidas con el paquete instalado el archivo se completó y publicó antes de salir con 130. Los códigos de fallo conservan la paridad con el motor de origen: entrada inválida, destino ya existente o entrada sin audio devuelven 2; ORT no disponible, FFmpeg ausente o fallido y error de E/S devuelven 1; el modelo DPDFNet ausente devuelve 4 (`model_missing`); entrada ausente devuelve 3. La cancelación pedida por la biblioteca devuelve 3. En lotes, los resultados individuales conservan los estados `ok`/`skipped`/`failed`; el código final refleja si el lote completó o tuvo fallos.
 
@@ -135,7 +135,7 @@ Cada error se construye como un error común de la CLI, con un único mapeo de e
 - `--dry-run` escribe por stderr la cabecera `Limpieza de ruido · N archivos` y por stdout el plan, `<entrada> → <salida> (<se procesaría | se sobrescribiría | se omitiría | fallaría: ya existe la salida>)` por archivo, sin etapas, y cierra con `✓ Simulación completada · no se ha borrado nada`. Con `--json` emite el envelope `planned` con `files`, `summary` y `context`.
 - `--verbose` añade líneas de detalle atenuadas por stderr, y una salida duplicada se avisa con `Aviso:`. Los decimales llevan coma y no queda texto en inglés ni línea `Summary:`.
 
-`--model-dir` y `--ffmpeg-path` no forman parte de esta interfaz y se rechazan como flags desconocidos: provisiona el modelo con `setup` y usa el FFmpeg integrado. El único comando público para limpiar archivos es `speech denoise`.
+Provisiona el modelo con `setup`; se usa el FFmpeg integrado. El único comando público para limpiar archivos es `speech denoise`.
 
 ---
 
@@ -511,7 +511,7 @@ Durante la síntesis emite un evento `audio` por cada fragmento del motor, inter
 { "event": "audio", "pcm_b64": "<PCM s16le, 24 kHz, mono, en base64>" }
 ```
 
-Al finalizar, emite el evento `result`, que ya no lleva el audio:
+Al finalizar, emite el evento `result`, que no lleva el audio:
 
 ```json
 { "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "voice": "<voz>", "work_ms": 1234 }
