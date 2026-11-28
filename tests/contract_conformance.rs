@@ -273,10 +273,8 @@ fn section_after(text: &str, heading: &str) -> Vec<String> {
 
 /// Toda variante de `ExitCode` tiene su fila en la tabla de `docs/CLI/README.md`.
 ///
-/// La tabla se quedó en 17 durante el ciclo de vida y no recogió los cinco códigos que
-/// `self update` y `self uninstall` añadieron después. Recorrer el enum es lo que
-/// convierte la afirmación en sincronía: un código nuevo nace sin fila y esta puerta
-/// falla hasta que la guía lo declare.
+/// Recorrer el enum es lo que convierte la afirmación en sincronía: un código nuevo
+/// nace sin fila y esta puerta falla hasta que la guía lo declare.
 #[test]
 fn cli_guide_table_declares_every_exit_code() {
     let (document, marker) = EXIT_CODE_TABLE_DOC;

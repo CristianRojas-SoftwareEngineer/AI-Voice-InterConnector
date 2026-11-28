@@ -5211,8 +5211,7 @@ async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<
 /// Lo que hay aquí es la conversión de tipos y la prosa; **la lista de destinos, el
 /// gate de categoría, la confirmación, la parada del daemon y el barrido** son los del
 /// motor. La lista que el envelope publica es la misma que el plan calculó, porque las dos
-/// salen de `lifecycle::cleanup::plan` —que es exactamente lo que fallaba antes, cuando
-/// `--dry-run` y la ejecución eran dos listas.
+/// salen de `lifecycle::cleanup::plan`.
 async fn handle_cleanup(
     json_mode: bool,
     voices: bool,
@@ -5244,7 +5243,7 @@ async fn handle_cleanup(
     // lo cierra al terminar el barrido. La simulación no abre ninguna etapa.
     //
     // La cabecera va antes de cualquier plan o pregunta. Sin categoría no hay
-    // cabecera: el `usage_error` lo devuelve la librería como hasta ahora.
+    // cabecera: el `usage_error` lo devuelve la librería.
     if options.any_category() {
         let (label, categories) = cleanup_header_parts(&options);
         avi_term::line::context_with(
@@ -9041,9 +9040,11 @@ mod tests {
         let err = daemon_error_from_response(resp).await;
         assert_eq!(err.code.code(), 1);
         assert_eq!(err.reason, "daemon_error");
-        // La orden de reinicio ya no va en el mensaje: es la solución de `daemon_error`.
-        assert!(err.message.contains("HTTP 404"), "mensaje: {}", err.message);
-        assert!(!err.message.contains("daemon restart"), "{}", err.message);
+        // La orden de reinicio no va en el mensaje: es la solución de `daemon_error`.
+        assert_eq!(
+            err.message,
+            "El daemon no expone esta ruta (HTTP 404): es anterior a este programa o no incluye la función."
+        );
         assert!(avi_core::exit_codes::solution_for(&err.reason)
             .is_some_and(|s| s.contains("ai-voice-interconnector daemon restart")));
     }
@@ -9222,7 +9223,7 @@ mod tests {
     }
 
     /// Los eventos `audio` llegan al receptor en orden mientras la respuesta sigue
-    /// abierta, y el resultado final ya no lleva el audio.
+    /// abierta, y el resultado final no lleva el audio.
     #[tokio::test]
     async fn consume_ndjson_stream_synthesis_delivers_audio_events_in_order() {
         let mut audio = CollectingAudio::default();

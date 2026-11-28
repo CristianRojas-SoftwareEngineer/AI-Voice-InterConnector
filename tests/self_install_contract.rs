@@ -527,9 +527,8 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     );
 }
 
-/// El camino de éxito no cambia: con `--no-setup` se sale con 0, sin `reason` y sin
-/// `models_cause`. Es el camino que la provisión no toca, y el que demuestra
-/// que el `reason` nuevo no se ha colado en las operaciones limpias.
+/// El camino de éxito sale con 0, sin `reason` ni `models_cause`: con `--no-setup`
+/// la provisión no interviene y las operaciones limpias no llevan `reason`.
 #[test]
 fn self_install_no_setup_exits_0_without_reason() {
     let sandbox = Sandbox::new("nosetup");

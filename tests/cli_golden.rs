@@ -91,8 +91,7 @@ fn bin_command() -> Command {
 // parada está acotada por `STOP_DEADLINE_GLOBAL`. Se suma el
 // warmup TTS en segundo plano: una operación típica (síntesis de texto corto,
 // muy por debajo del failsafe) + arranque/parada (~15-25 s) + margen → 180 s;
-// el dub encadena STT + traducción + TTS + arranque/parada → 360 s. Sin
-// baseline medido aún; se remedirá y ajustará más adelante si hace falta.
+// el dub encadena STT + traducción + TTS + arranque/parada → 360 s.
 
 /// Techo del guard para tests pesados no-dub (3 min).
 const GUARD_HEAVY_SECS: u64 = 180;
@@ -101,14 +100,12 @@ const GUARD_HEAVY_SECS: u64 = 180;
 /// sin usar (permitido para mantener `cargo check --tests` limpio en ambas).
 #[allow(dead_code)]
 const GUARD_DUB_SECS: u64 = 360;
-/// Presupuesto del warm convertido en timeout diagnóstico (readiness por
-/// evento en vez de por sondeo temporal): cada unidad
-/// vale 200 ms de espera del evento. El warmup queda acotado por el arranque
-/// del residente (hasta 30 s) más el presupuesto del testigo de 25 caracteres
-/// (30 s + 0,30 s × 25 = 37,5 s): 67,5 s ≤ 340 uds = 68 s, así que ningún
-/// timeout nuevo es más corto que el warmup real. El timeout es bug a
-/// diagnosticar, no presupuesto de sondeo. Se conserva el tipo `u32` para no
-/// cambiar las firmas de `wait_for_daemon_state`.
+/// Presupuesto del warm como timeout diagnóstico (readiness por evento, no por
+/// sondeo temporal): cada unidad vale 200 ms de espera del evento. El warmup
+/// queda acotado por el arranque del residente (hasta 30 s) más el presupuesto
+/// del testigo de 25 caracteres (30 s + 0,30 s × 25 = 37,5 s): 67,5 s ≤ 340 uds
+/// = 68 s. Regla: ningún timeout es más corto que el warmup real. Agotarlo es
+/// un bug a diagnosticar, no un presupuesto de sondeo.
 const WARM_FAILSAFE_RETRIES: u32 = 340;
 
 static PROCESS_T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -262,16 +259,16 @@ fn port_open(port: u16) -> bool {
     .is_ok()
 }
 
-// ─── Ciclo por instancia (la fixture por sesión compartida queda eliminada) ──
+// ─── Ciclo por instancia ──
 //
 // CLASE DECLARADA: E2E-con-proceso, aislado por instancia (puerto efímero +
 // sandbox de estado + evento ready) + serializado solo por capacidad de inferencia. Cada test del ciclo posee su instancia
 // (`IsolatedInstance`: puerto efímero + `AVI_DATA_DIR` propio + evento de
 // readiness) y su propio apagado con cero huérfanos verificados a nivel SO.
-// Ningún test nuevo de contrato puro debe heredar este andamiaje (vive en
-// `crates/avi-daemon/tests/golden.rs`).
+// Los tests de contrato puro no heredan este andamiaje: viven en
+// `crates/avi-daemon/tests/golden.rs`.
 //
-// Presupuesto explícito por test (serie permanente, sin tocar el producto):
+// Presupuesto explícito por test:
 // techo = `REQUEST_FAILSAFE` del cliente HTTP del daemon (240 s por petición).
 // Ningún test de la serie espera más que eso por una operación contra el
 // residente.
@@ -310,9 +307,8 @@ fn daemon_state_env(envs: &[(&str, &str)]) -> Value {
 /// "running"` SIN exigir `warm == "warm"` ni abortar ante `warm_failed`. El
 /// warmup TTS en segundo plano es una optimización, no un requisito de
 /// correctitud del ciclo de vida: esta función (`wait_for_daemon_state_env`)
-/// y `start_instance` quedan sin tocar por ese camino nuevo, así que los
-/// tests que sí validan contenido sintetizado (clone/dub) siguen pagando el
-/// warmup completo sin cambios de comportamiento.
+/// y `start_instance` esperan el warmup completo, así que los tests que sí
+/// validan contenido sintetizado (clone/dub) pagan el warmup completo.
 fn wait_for_daemon_state_env(inst: &IsolatedInstance, expected: &str, retries: u32) -> Value {
     let timeout = Duration::from_millis(200 * retries as u64);
     let envs = inst.args();
@@ -661,6 +657,53 @@ fn run_json(args: &[&str]) -> (i32, Value) {
     let (_sandbox, envs) = contract_sandbox("run_json");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     run_json_env(args, &envs)
+}
+
+/// Claves de primer nivel de un objeto sin las que añade el registro de etapas
+/// (`schema_version`, `context`, `total_ms`, `stages`, `warnings`): quedan las
+/// propias del comando, que cada prueba compara con su conjunto exacto.
+fn payload_keys(object: &Value) -> std::collections::BTreeSet<String> {
+    const REPORT_KEYS: [&str; 5] = [
+        "schema_version",
+        "context",
+        "total_ms",
+        "stages",
+        "warnings",
+    ];
+    object
+        .as_object()
+        .expect("el envelope es un objeto JSON")
+        .keys()
+        .filter(|key| !REPORT_KEYS.contains(&key.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Claves propias del envelope de `cleanup`.
+const CLEANUP_ENVELOPE_KEYS: [&str; 8] = [
+    "status",
+    "reason",
+    "removed",
+    "planned",
+    "preserved",
+    "unreadable",
+    "failed",
+    "kept",
+];
+
+/// Claves propias del envelope de `speech dub`. Solo lo usan tests con
+/// `native-stt`; sin ese feature queda sin usar.
+#[allow(dead_code)]
+const DUB_ENVELOPE_KEYS: [&str; 5] = ["status", "text", "translated", "first_audio_ms", "stalls"];
+
+/// Claves posibles del envelope de `speech say`: `translated` solo sale si hubo
+/// traducción. Solo lo usan tests que dependen de features opcionales.
+#[allow(dead_code)]
+const SAY_ENVELOPE_KEYS: [&str; 5] = ["status", "voice", "first_audio_ms", "stalls", "translated"];
+
+/// Conjunto de claves esperado, para compararlo con [`payload_keys`].
+fn key_set(keys: &[&str]) -> std::collections::BTreeSet<String> {
+    keys.iter().map(|key| (*key).to_string()).collect()
 }
 
 // ─── Sandbox de estado por instancia (directorio de estado por instancia) ──
@@ -2502,9 +2545,10 @@ fn cleanup_voices_dry_run_reports_planned() {
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null, "sin `reason` en el éxito");
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&CLEANUP_ENVELOPE_KEYS),
+        "{actual}"
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
@@ -2522,9 +2566,10 @@ fn cleanup_synthetic_speech_dry_run_reports_planned() {
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&CLEANUP_ENVELOPE_KEYS),
+        "{actual}"
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
@@ -2545,9 +2590,10 @@ fn cleanup_model_dry_run_reports_planned() {
     assert_eq!(code, 0, "{}", actual);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&CLEANUP_ENVELOPE_KEYS),
+        "{actual}"
     );
     assert!(actual["planned"].is_array());
     assert_eq!(actual["removed"], serde_json::json!([]));
@@ -2574,9 +2620,10 @@ fn cleanup_all_dry_run_reports_planned() {
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert_eq!(actual["reason"], Value::Null);
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&CLEANUP_ENVELOPE_KEYS),
+        "{actual}"
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
@@ -3251,30 +3298,26 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     let (code, value) = run_json_env(&["--json", "doctor"], &envs);
     // Un objeto: `run_json_env` no habría podido parsear dos objetos JSON seguidos,
     // así que llegar aquí con un solo objeto parseado es parte de la prueba.
-    assert!(
-        value.get("error").is_none(),
-        "el veredicto de `doctor` no lleva objeto `error`: {}",
-        value
+    assert_eq!(
+        payload_keys(&value),
+        key_set(&[
+            "version", "target", "channel", "install", "path", "pending", "models", "checks",
+            "failed",
+        ]),
+        "claves de primer nivel del reporte de ciclo de vida: {value}"
     );
-    assert!(
-        value.get("status").is_none(),
-        "`doctor` a secas no lleva status: {value}"
+    assert_eq!(
+        payload_keys(&value["models"]),
+        key_set(&[
+            "root",
+            "shared_root",
+            "provisioned",
+            "missing",
+            "size_bytes"
+        ]),
+        "claves de `models`: {value}"
     );
-    for key in [
-        "version", "target", "channel", "install", "path", "pending", "models", "checks", "failed",
-    ] {
-        assert!(
-            value.get(key).is_some(),
-            "falta la clave `{key}` del reporte de ciclo de vida: {}",
-            value
-        );
-    }
-    // La raíz de datos vive dentro de `install`, no como clave de primer nivel.
-    assert!(
-        value.get("data_dir").is_none(),
-        "la raíz de datos no puede ser clave de primer nivel: {}",
-        value
-    );
+    // La raíz de datos vive dentro de `install`.
     assert!(
         value["install"]["data_dir"].is_string(),
         "la raíz de datos vive dentro de `install`"
@@ -3282,10 +3325,6 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     assert!(
         value["models"]["provisioned"].is_array() && value["models"]["missing"].is_array(),
         "el estado de los modelos, el de clonado incluido, vive dentro de `models`"
-    );
-    assert!(
-        value["models"].get("base").is_none(),
-        "el modelo de clonado es una entrada más de `provisioned`/`missing`, sin clave `base`"
     );
     assert_eq!(
         value["schema_version"],
@@ -3772,7 +3811,7 @@ mod tts {
     /// libtest (hilos del mismo proceso), nextest (un proceso por test) e
     /// invocaciones simultáneas cualesquiera: el SO arbitra entre descriptores
     /// independientes del mismo fichero, dentro y entre procesos. Un titular
-    /// caído libera solo: el SO suelta el lock con el proceso y aquí ya no hay
+    /// caído libera solo: el SO suelta el lock con el proceso y aquí no hay
     /// envenenado que tolerar ni recuperar.
     pub(crate) struct TtsGuard {
         /// Descriptor bloqueado en exclusivo; se conserva abierto mientras viva
@@ -5493,7 +5532,7 @@ mod tts {
         // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
         // verificación es sobre el archivo (WAV válido + tasa de error de
         // palabras), no sobre el
-        // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
+        // altavoz. Gate de dispositivo: sin mezclador no hay humo.
         let inst = IsolatedInstance::new("say_plays");
         avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
@@ -5513,13 +5552,13 @@ mod tts {
         );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
-        // el envelope no lleva `audio_path` y el temporal se borra al
-        // reproducir, así que la verificación sobre archivo (WAV válido + tasa
-        // de error de palabras)
-        // es imposible; el testigo queda en humo de punta a punta.
+        // El temporal se borra al reproducir, así que la verificación sobre
+        // archivo (WAV válido + tasa de error de palabras) es imposible; el
+        // testigo queda en humo de punta a punta. Las claves propias del
+        // envelope son las del contrato de `say`.
         assert!(
-            actual.get("audio_path").is_none(),
-            "el envelope del say no debe llevar audio_path: {actual}"
+            payload_keys(&actual).is_subset(&key_set(&SAY_ENVELOPE_KEYS)),
+            "claves del envelope del say: {actual}"
         );
     }
 
@@ -5628,13 +5667,14 @@ mod tts {
         );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        // sin `audio_path` ni temporal, la verificación sobre archivo
+        // Sin audio en el envelope ni temporal, la verificación sobre archivo
         // (WAV válido + tasa de error de palabras) es imposible; queda el texto
         // transcrito (`text`) y el texto sintetizado (`translated`), que en
         // passthrough coinciden.
-        assert!(
-            actual.get("audio_path").is_none(),
-            "el envelope del dub no debe llevar audio_path: {actual}"
+        assert_eq!(
+            payload_keys(&actual),
+            key_set(&DUB_ENVELOPE_KEYS),
+            "claves del envelope del dub: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -8620,11 +8660,12 @@ mod tts {
             actual["schema_version"],
             Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
         );
-        // el envelope no lleva `audio_path`; quedan la transcripción (`text`) y el
-        // texto sintetizado (`translated`), iguales en passthrough.
-        assert!(
-            actual.get("audio_path").is_none(),
-            "el envelope del dub no debe llevar audio_path: {actual}"
+        // El envelope lleva la transcripción (`text`) y el texto sintetizado
+        // (`translated`), iguales en passthrough.
+        assert_eq!(
+            payload_keys(&actual),
+            key_set(&DUB_ENVELOPE_KEYS),
+            "claves del envelope del dub: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -8679,11 +8720,12 @@ mod tts {
             actual["schema_version"],
             Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
         );
-        // el envelope no lleva `audio_path`; `text` es la transcripción y
-        // `translated` el texto traducido que se sintetiza, distintos entre sí.
-        assert!(
-            actual.get("audio_path").is_none(),
-            "el envelope del dub no debe llevar audio_path: {actual}"
+        // `text` es la transcripción y `translated` el texto traducido que se
+        // sintetiza, distintos entre sí.
+        assert_eq!(
+            payload_keys(&actual),
+            key_set(&DUB_ENVELOPE_KEYS),
+            "claves del envelope del dub: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -9900,18 +9942,14 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
 }
 
 // ─── JSON veraz y temporales ───────────────────────────────────────────────────
-// Fijan cuatro comportamientos: el `status` del simulacro de `self uninstall` y
-// de `cleanup` (`planned`, con el recibo de `removed` y sin `dry_run`); el
+// Fijan cuatro contratos: el `status` del simulacro de `self uninstall` y de
+// `cleanup` (`planned`, con el recibo de `removed` y sin `dry_run`); el
 // veredicto de `daemon stop` sin daemon (`not_running` con `was_running`); el
 // canal del fallo de parseo con `--json` (envelope `usage_error` por stdout y
-// stderr mudo); y la retirada de `audio_path` de `say` y `dub`.
-//
-// `was_running` es el nombre del campo que ya emitía el motor, y
-// `daemon_fully_stopped` el del predicado de apagado completo: el vocabulario
-// final respeta los dos en lugar de inventar otros.
+// stderr mudo); y el envelope de `say` y `dub`, que no lleva `audio_path`.
 
 /// `daemon stop` sin daemon informa `not_running` con el veredicto del
-/// motor, en lugar de afirmar `shutdown_sent` sin `was_running`.
+/// motor (`was_running`).
 #[test]
 fn daemon_stop_without_daemon_reports_not_running() {
     let (_sandbox, envs) = contract_sandbox("stop-sin-daemon");
@@ -10159,7 +10197,7 @@ fn seed_unstoppable_daemon(dir: &std::path::Path) {
 }
 
 /// El simulacro de `cleanup` es un plan (`planned` lleva las rutas y `removed`
-/// va vacío) y no lleva la clave redundante `dry_run`.
+/// va vacío) y su envelope lleva exactamente las claves de `cleanup`.
 #[test]
 fn cleanup_dry_run_reports_planned() {
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
@@ -10173,9 +10211,10 @@ fn cleanup_dry_run_reports_planned() {
         actual.get("planned").and_then(|v| v.as_array()).is_some(),
         "el simulacro debe traer el plan en `planned`: {actual}"
     );
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&CLEANUP_ENVELOPE_KEYS),
+        "{actual}"
     );
 }
 
@@ -10189,7 +10228,19 @@ fn uninstall_dry_run_without_receipt_is_not_installed() {
     assert_eq!(actual["planned"], serde_json::json!([]));
     assert_eq!(actual["removed"], serde_json::json!([]));
     assert_eq!(actual["path_reverted"], false);
-    assert!(actual.get("dry_run").is_none());
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&[
+            "status",
+            "reason",
+            "removed",
+            "planned",
+            "preserved",
+            "path_reverted",
+            "failed",
+        ]),
+        "{actual}"
+    );
 }
 
 /// Lista recursivamente rutas relativas y longitudes para comprobar que un estado ajeno no cambia.
@@ -10581,9 +10632,10 @@ fn dub_daemon_success_reports_first_audio_and_stalls() {
         "el envelope informa los ms hasta el primer sonido: {actual}"
     );
     assert_eq!(actual["stalls"], Value::from(0), "sin cortes: {actual}");
-    assert!(
-        actual.get("audio_path").is_none(),
-        "el envelope del dub no debe llevar audio_path: {actual}"
+    assert_eq!(
+        payload_keys(&actual),
+        key_set(&DUB_ENVELOPE_KEYS),
+        "claves del envelope del dub: {actual}"
     );
 }
 
@@ -10717,8 +10769,8 @@ fn say_daemon_success_reports_first_audio_and_stalls() {
     );
     assert_eq!(actual["stalls"], Value::from(0), "sin cortes: {actual}");
     assert!(
-        actual.get("audio_path").is_none(),
-        "el envelope del say no debe llevar audio_path: {actual}"
+        payload_keys(&actual).is_subset(&key_set(&SAY_ENVELOPE_KEYS)),
+        "claves del envelope del say: {actual}"
     );
 }
 
