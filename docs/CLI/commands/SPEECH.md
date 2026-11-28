@@ -503,7 +503,7 @@ Con `--denoise`, el cliente envía `denoise: true` y limpia el daemon (en la rut
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
 
-Los eventos `transcript` y `translation` llevan exactamente las claves `event`, `text` y `schema_version`; `text` es contenido del usuario, no texto de interfaz. Salen antes del primer `audio`, de modo que el cliente muestra `Transcripción: …` y `Traducción: …` antes de que suene el doblaje. Son eventos nuevos sin cambio de versión del esquema del daemon; un cliente que no los conozca los ignora.
+Los eventos `transcript` y `translation` llevan exactamente las claves `event`, `text` y `schema_version`; `text` es contenido del usuario, no texto de interfaz. Salen antes del primer `audio`, de modo que el cliente muestra `Transcripción: …` y `Traducción: …` antes de que suene el doblaje. Son eventos aditivos: no cambian la versión del esquema del daemon y un cliente que no los conozca los ignora.
 
 Durante la síntesis emite un evento `audio` por cada fragmento del motor, intercalado con los latidos:
 

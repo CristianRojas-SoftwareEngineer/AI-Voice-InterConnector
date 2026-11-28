@@ -103,7 +103,7 @@ fn registry_subkey_default() -> String {
 /// recibo.
 ///
 /// La raíz de datos vive **aquí** y no como clave de primer nivel: es el sitio donde el
-/// contrato la coloca y donde espera que esté tras retirar `data_dir`.
+/// contrato la coloca.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Install {
     /// Directorio de programa, que es el del recibo si lo hay.
@@ -786,10 +786,9 @@ mod tests {
         crate::uninstall::executable_name_default()
     }
 
-    /// Las nueve claves del envelope —las siete del contrato más `checks` y `failed`— están, y
-    /// ninguna de las cuatro que el contrato retira está. La raíz de datos y el estado
-    /// del modelo Base sobreviven **dentro** de `install` y de `models`, que es donde el
-    /// contrato los coloca.
+    /// El envelope lleva exactamente sus nueve claves —las siete del contrato más `checks` y
+    /// `failed`—. La raíz de datos y el estado del modelo de clonado viven **dentro** de
+    /// `install` y de `models`, que es donde el contrato los coloca.
     #[test]
     fn doctor_reports_every_lifecycle_key() {
         let (_scratch, env) = env("keys");

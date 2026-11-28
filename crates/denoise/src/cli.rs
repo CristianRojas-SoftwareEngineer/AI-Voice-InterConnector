@@ -566,7 +566,7 @@ pub fn run_dry_run(
 
     for item in items {
         let exists = item.output.exists();
-        // El mensaje de máquina (JSONL) y el texto para personas de cada caso.
+        // El estado y la razón de máquina, y el texto para personas, de cada caso.
         let (status, reason, human) = if exists {
             if overwrite {
                 summary.ok += 1;

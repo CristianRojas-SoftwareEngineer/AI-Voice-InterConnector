@@ -185,7 +185,7 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 
 1. `VoiceName::parse(name)` → exit 2 `invalid_voice_name`, sin tocar ningún archivo. El validador rechaza `.` y `..`, que unidos al almacén lo nombrarían entero: `voice remove --name .` no puede borrar `voices/` ni `speech/`.
 2. `is_factory_name(name)` → exit 2 `cannot_remove_default` (nota: pese al
-   nombre de la razón, protege toda voz de fábrica; hoy solo `default`).
+   nombre de la razón, protege toda voz de fábrica; la de fábrica es `default`).
 3. La voz no existe en el registro → exit 3 `voice_not_found`, antes de
    preguntar nada.
 4. **Los audios sintetizados se van con su voz, y borrar siempre pregunta.** Se leen las etiquetas del namespace de

@@ -78,7 +78,7 @@ fn bin_command() -> Command {
 // inferencia pesada residente (~2.7 GB de RAM), se mantiene el semáforo de
 // capacidad de recursos `tts::lock_tts`.
 
-// ─── Observabilidad de tests (solo instrumentación, sin cambios de comportamiento) ───
+// ─── Observabilidad de tests: hitos por `eprintln!` ───
 //
 // Hitos por `eprintln!` (stderr, sin buffer) con formato único
 // `[milestone][mm:ss.mmm-desde-inicio-test] mensaje`. Sin `println!` para progreso.

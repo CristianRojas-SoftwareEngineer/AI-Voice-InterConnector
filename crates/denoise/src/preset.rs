@@ -78,12 +78,12 @@ pub struct EgressParams {
 
 /// Presets de calidad disponibles en la CLI.
 ///
-/// `None` (= flag `--preset` ausente) conserva los defaults del perfil original;
-/// el subcomando de AVI interpreta la ausencia como `studio` y `--preset
-/// default` recupera el perfil original.
+/// `None` (= flag `--preset` ausente) usa los valores por defecto del perfil
+/// `default`; el subcomando de AVI interpreta la ausencia como `studio` y
+/// `--preset default` selecciona el perfil `default`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Preset {
-    /// Perfil original de Denoise: 192 kbps, sin normalización ni highpass.
+    /// Perfil `default`: 192 kbps con pérdida, sin normalización ni highpass.
     #[value(name = "default")]
     Default,
     /// Preset `studio`: empaquetado y post-procesamiento de calidad máxima.
