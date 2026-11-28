@@ -4,6 +4,7 @@
 
 - [Modelos (`setup`)](#modelos-setup)
 - [Comandos](#comandos)
+  - [Salida en la terminal](#salida-en-la-terminal)
   - [Referencia de esquemas `--json`](#referencia-de-esquemas---json)
   - [`version`](#version)
   - [`doctor`](#doctor)
@@ -82,12 +83,27 @@ ai-voice-interconnector setup --force-update         # purga los snapshots pinne
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
 
-**Qué esperar:** el encabezado `Descargando N modelos:`, una barra por modelo con su
-porcentaje, tamaño real, velocidad y tiempo restante (repintada de forma continua, sin
-valores absurdos: `quedan —` durante los primeros 2 s), y una línea por modelo terminado
-(`  ✓ [1/5] qwen3-tts-0.6b-base  2,5 GB en 44,0 s · 56,7 MB/s`). Al terminar cierra por stderr con
-`✓ Setup completado en <total> · N modelos, X descargados`, o con `✓ Los N modelos ya estaban
-descargados.` si no había nada que descargar; ya no hay una línea «Total:» aparte. Una descarga
+**Qué esperar:** todo sale por stderr con la estructura de [Salida en la terminal](#salida-en-la-terminal): la cabecera `Setup · N modelos` (con `--force-update`, `· descarga forzada`), el plan (qué se descargará y cuánto) y, con `--force-update`, la etapa `Purga` antes de las descargas. Cada modelo que falta es una etapa `Descarga`: con terminal, su línea viva muestra el porcentaje, el tamaño descargado y la velocidad, y al terminar deja la nota `<tamaño> · <velocidad>/s`; sin terminal, la etapa se anuncia una vez y deja un latido cada 10 s con lo descargado hasta ese momento. No hay barras ni tiempo restante. Ejemplo con stderr redirigido a un archivo (`setup --yes 2> log`), donde faltaban dos modelos:
+
+```
+Setup · 5 modelos
+Se descargarán 2 modelos, unos 97,4 MB.
+  [1/2] ● Descargando opus-mt-en-es…
+  [1/2] ✓ opus-mt-en-es  6,0 s · 82,5 MB · 13,8 MB/s
+  [2/2] ● Descargando dpdfnet8…
+  [2/2] ✓ dpdfnet8       5,0 s · 14,9 MB · 3,0 MB/s
+──────────────────────────────────────────────────
+✓ Setup completado en 11,0 s · 2 modelos, 97,4 MB descargados
+```
+
+Con los modelos ya provisionados no descarga nada y cierra enseguida (`already_provisioned` con `--json`):
+
+```
+Setup · 5 modelos
+✓ Los 5 modelos ya estaban descargados.
+```
+
+Las duraciones y los tamaños son orientativos. Una descarga
 interrumpida se repite entera. La provisión se decide solo por presencia del snapshot HF (no hay
 índice `manifest.json` que consultar): si lo vuelves a ejecutar con los
 snapshots presentes, termina al instante sin descargar nada. Si la provisión falla al
@@ -96,7 +112,7 @@ final de una instalación, el programa **queda instalado** y el comando sale con
 basta reintentar con `setup`; si Hugging Face rechaza un modelo fijado
 (`model_unavailable`), reintentar no lo resuelve y hace falta una versión que vuelva a
 fijarlo. `setup` no requiere cuenta: descarga sin credenciales e ignora `HF_TOKEN`,
-`HF_TOKEN_PATH` y el token guardado. Pide una sola confirmación antes de actuar: con `--force-update` es destructiva (anuncia que se purgarán los modelos descargados y el tamaño de la selección completa; sin terminal exige `--yes`) y sin él solo informa el tamaño; si la cancelas no se purga ni se descarga nada y solo aparece «Cancelado.» (o «Cancelado; no se ha borrado nada.» con `--force-update`). La limpieza
+`HF_TOKEN_PATH` y el token guardado. Pide una sola confirmación antes de actuar: con `--force-update` es destructiva (anuncia que se purgarán los modelos descargados y el tamaño de la selección completa; sin terminal exige `--yes`) y sin él solo informa el tamaño; si la cancelas no se purga ni se descarga nada y, tras el separador, solo aparece `Cancelado.` (o `Cancelado; no se ha borrado nada.` con `--force-update`). La limpieza
 posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y PATH).
 
 > **Importante**: hasta que los modelos estén provisionados, `speech say` y `daemon start`
@@ -132,17 +148,78 @@ número de cada uno se lee de su propia constante, `CLI_SCHEMA_VERSION` y
 `DAEMON_SCHEMA_VERSION` (`crates/avi-core/src/json_emitter.rs`), y el historial de
 subidas de cada uno vive en el [CHANGELOG](CHANGELOG.md).
 
+### Salida en la terminal
+
+Todo comando que trabaja por etapas escribe por stderr la misma estructura, con y sin `--json`:
+
+1. la **cabecera**, una línea de contexto (por ejemplo `Doblaje es → en · voz default · archivo a.wav · daemon`) que se escribe después de validar la invocación y antes de tocar recursos, de modo que un error de invocación sale sin ella;
+2. el **mapa de fases** (`Entrada → Voz`), si hay dos o más;
+3. las **fases**, cada una con sus etapas numeradas `[n/N]` (la numeración y el nombre de la fase solo aparecen si hay dos o más etapas);
+4. un **separador** de 50 `─`;
+5. el **cierre** `✓ <acción> en <duración total>`, con ` · <dato>` por cada dato extra y, debajo, el desglose por fase cuando hay fases.
+
+Un ejemplo con una referencia corta (`voice clone`), que muestra el mapa de fases, un aviso bajo la etapa que lo causa y el cierre con desglose:
+
+```
+Clonación de la voz muestra-corta · archivo clip3.wav · local
+Entrada → Voz
+
+Entrada
+  [1/3] ✓ Lectura    0,0 s
+        ⚠ La referencia dura 2,9 s; se recomienda al menos 5 s de habla continua para una huella de voz fiable.
+Voz
+  [2/3] ✓ Clonación  1,0 s
+  [3/3] ✓ Guardado   0,0 s
+──────────────────────────────────────────────────
+✓ Voz muestra-corta clonada en 1,0 s
+  Entrada 0,0 s · Voz 1,0 s
+```
+
+Las duraciones de todas las muestras de esta guía son orientativas: dependen del equipo y de si el daemon está caliente.
+
+| Símbolo | Significado |
+|---|---|
+| `●` | Etapa en curso. Con terminal se repinta con su duración; sin terminal se anuncia una vez y deja un latido cada 10 s |
+| `✓` | Etapa o comando terminado (verde) |
+| `✗` | Etapa fallida (rojo); el separador y el `Error:` siguen a continuación |
+| `○` | Etapa omitida, con su motivo (`○ Parada del daemon · no había ningún daemon en marcha`) |
+| `⚠` | Aviso, sangrado bajo la etapa que lo causa; solo si el comando no tiene ninguna etapa sale como línea `Aviso: <texto>` |
+| `│` | Resultado de la etapa (un texto, una ruta); fuera de la terminal lleva su etiqueta (`Transcripción:`, `Traducción:`, `Audio:`) |
+| `·` | Separa los datos de una línea (cabecera, nota de etapa, cierre) |
+
+Las duraciones se escriben `0,7 s`, `2 min 35 s` y `1 h 02 min`. Una etapa de trabajo única no deja su línea numerada y queda solo el cierre. Las etapas transitorias (validación, envío al daemon) no dejan línea.
+
+**Qué va por cada flujo.** `--json` solo cambia stdout: con `--json`, stdout lleva un único objeto JSON y stderr lleva exactamente lo mismo que sin él (cabecera, etapas, avisos, separador y cierre). Sin `--json`, stdout lleva solo los resultados (textos, listas, rutas y planes de `--dry-run`) y stderr el resto, incluidos los planes que preceden a una confirmación, las preguntas y los errores (`Error: <qué pasó>.` y, cuando hay remedio, `Solución: <qué hacer>.`).
+
+**Fuera de la terminal.** Con stdout redirigido a un archivo o a una tubería, stdout lleva el resultado con su etiqueta (`Transcripción: <texto>`) y los resultados salen además por stderr como `│ <texto>`, para que un log los conserve. Con `> salida.txt 2>&1` los resultados salen por tanto dos veces, con etiqueta; con `2> log` y stdout en la terminal, el log no los lleva. **`--json` con `2>&1` mezcla el envelope con el progreso y no está soportado**: lee solo stdout. Sin terminal, cada etapa en curso se anuncia una vez (`● Descargando dpdfnet8…`) y deja un latido cada 10 s.
+
+**Cancelación y Ctrl+C.** Si contestas que no a una pregunta, la salida termina con el separador y una sola línea, sin cuerpo (`Cancelado; no se ha borrado nada.` en los comandos que borran, `Cancelado.` en los que no), con exit 0 y, con `--json`, `status` `cancelled`. Ctrl+C durante una etapa la deja como `✗ <Etapa> · interrumpido`, sigue el separador y `Interrumpido en <duración>`, y el comando sale con 130; en la pregunta escribe `Interrumpido; no se ha modificado nada.` y también sale con 130.
+
+**Variables.** `AVI_NO_PROGRESS=1` silencia solo las etapas, no la cabecera, los resultados ni el cierre. `NO_COLOR` quita solo el color (que de todos modos solo se emite en una terminal; redirigida, la salida nunca lo lleva).
+
+**Windows.** Se recomienda Windows Terminal. En PowerShell 5.1, redirigir stderr (`2> log` o `2>&1`) hace que cada línea que el programa escribe en stderr se trate como un error del shell, aunque el comando haya ido bien: para scripts usa `--json` y lee solo stdout.
+
 ### Referencia de esquemas `--json`
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"7"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
-diagnóstico/progreso va a stderr; no se escriben la línea de contexto, los resultados de texto ni el cierre.
+`"7"`). En todos los casos, stdout contiene exactamente un objeto JSON y stderr lleva lo mismo que sin `--json`: la cabecera, las etapas, los avisos y el cierre (ver [Salida en la terminal](#salida-en-la-terminal)).
 El `error` de un payload de error termina siempre en `.`, `?` o `!` y puede llevar al final
 ` Detalle: <texto técnico de la biblioteca>`; la línea `Solución:` es solo del texto humano. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos. Estos esquemas se repiten a
 propósito aquí y en la página de cada comando en [`docs/CLI/commands/`](docs/CLI/commands/),
 para que quien consume la salida de un comando lo tenga a mano sin cambiar de documento.
+
+**Claves comunes.** Todo envelope de un comando con etapas lleva, además de su payload propio, estas claves, calculadas por la misma fuente que pinta el texto de stderr (por eso coinciden con él). También se omiten de las tablas por brevedad:
+
+| Clave | Contenido |
+|---|---|
+| `context` | Los pares tipados de la cabecera (por ejemplo `route`, `source_language`, `voice`, `file`). Es `{}` si el comando tiene cabecera pero ningún par, y está ausente si no tiene cabecera |
+| `total_ms` | Duración total de la operación en milisegundos, contada desde que se confirma (tras la pregunta). Solo aparece si hay etapas |
+| `stages` | Lista de etapas en orden de ejecución, solo con etapas. Cada elemento lleva `stage` (el identificador, como `reading` o `synthesizing`), `phase` (el identificador de la fase, o `null`), `start_ms` y `end_ms` (relativos al inicio tras confirmar) y, si procede, `failed: true` (la etapa falló), `skipped: true` (se omitió) o `transient: true` (no dejó línea en el texto). Las etapas de una misma fase pueden solaparse, como la síntesis y la reproducción en streaming |
+| `warnings` | Los textos de los avisos `⚠`, en orden. Siempre presente cuando hay etapas; sin etapas, solo si hay avisos |
+
+El envelope de error conserva `error` y `reason` y suma estas mismas claves. Las consultas (`voice list`, `speech list`, `devices`, `daemon status`, `--version`, `--help` y `self update --check`) no llevan `status`. Un comando cancelado lleva `stages: []`. Un comando sin cabecera ni etapas (el `translate` de mismo idioma) no lleva ninguna de las cuatro. La definición normativa está en [las claves comunes del envelope](docs/CLI/CONTRACT.md#las-claves-comunes-del-envelope).
 
 **`speech synthesize --json`** — el bucle interactivo de `--play` es
 incompatible con `--json` (exit 2 si se combinan), así que bajo `--json` el
@@ -151,7 +228,7 @@ campo a campo en modo directo y vía daemon.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"success"` si se guardó, o `"skipped"` si `--skip-existing` conservó el audio sintetizado existente sin sintetizar |
+| `status` | string | `"synthesized"` si se guardó, o `"skipped"` si `--skip-existing` conservó el audio sintetizado existente sin sintetizar |
 | `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`): la guardada o la que ya existía |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
@@ -183,10 +260,11 @@ según se sintetiza y no pasa por ningún archivo.
 acción (no de estado; para eso está `daemon status --json`). Los mensajes
 informativos van a stderr. El éxito o fallo lo transporta el exit code: un
 fallo emite el payload de error (`error`) y sale no-cero, no una clave `ok`.
+Además de las claves comunes, `context` lleva `addr` (y, en `start` y `restart`, `warm_voice` y `auto_restart`). `already_running` y `not_running` no llevan etapas.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `start`: `"started"` (arrancado) o `"already_running"` (ya sano, sin tocarlo). `restart`: `"restarted"`. `stop`: `"not_running"` si no había daemon, `"shutdown_sent"` si lo había y se verificó detenido |
+| `status` | string | `start`: `"started"` (arrancado) o `"already_running"` (ya sano, sin tocarlo). `restart`: `"restarted"`. `stop`: `"not_running"` si no había daemon, `"shutdown_sent"` si lo había y se verificó detenido, `"still_running"` si el daemon o su residente siguen vivos (veredicto, exit 5) |
 | `daemon` | string | `"running"` en `start`/`restart`; `"stopped"` en `stop` |
 | `pid` | number | Solo en `start`/`restart` con éxito, si el gestor expone el PID del daemon lanzado |
 | `was_running` | boolean | Solo en `stop`: el veredicto del motor sobre si había daemon antes de parar |
@@ -220,6 +298,9 @@ una respuesta válida y sale como payload, no como texto.
 | `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (modelos sin provisionar), `size_bytes` |
 | `checks` | array de objetos | `{name, ok, detail}` por chequeo |
 | `failed` | array de strings | Nombres de los chequeos fallidos (vacío si todo correcto); exit 1 si no está vacío |
+| `status` | string | Solo con `--repair`: `"repaired"`. Sin `--repair` no hay `status` ni claves comunes: el reporte no es el resultado de una acción |
+
+Con comprobaciones fallidas, el `Error:` y su `Solución:` salen por stderr también con `--json`; stdout lleva solo el reporte.
 
 **`devices --json`**
 
@@ -246,8 +327,10 @@ una respuesta válida y sale como payload, no como texto.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"completed"`, o `"cancelled"` si cancelas la confirmación (exit 0, `models_provisioned` vacío, nada purgado ni descargado) |
+| `status` | string | `"completed"`, `"already_provisioned"` (los modelos ya estaban descargados: sin etapas) o `"cancelled"` si cancelas la confirmación (exit 0, `models_provisioned` vacío, nada purgado ni descargado; `stages: []`) |
 | `models_provisioned` | array de strings | Los 5 modelos (`opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`, `dpdfnet8`) |
+
+`context` lleva `models` (cuántos modelos tiene la selección) y `force_update`.
 
 **`cleanup --json` / `self uninstall --json`**
 
@@ -255,18 +338,23 @@ una respuesta válida y sale como payload, no como texto.
 |-------|------|-------------|
 | `status` | string | `cleanup`: `"cleanup_complete"` / `"planned"` (simulacro) / `"cancelled"` (cancelación de la confirmación, exit 0). `self uninstall`: `"uninstalled"` / `"removal_scheduled"` (Windows, borrado diferido) / `"not_installed"` (idempotencia) / `"planned"` (simulacro) / `"cancelled"` |
 | `reason` | string \| null | `null` en el desenlace normal; con `--json`, un fallo emite el objeto `error` + `reason` de §10 del contrato |
-| `removed` | array de strings | Rutas efectivamente eliminadas; con `--dry-run` copia `planned`; vacío si no había nada |
-| `planned` | array de strings | Lo que la operación iba a borrar, también en el borrado real: simulacro y ejecución salen del mismo cálculo, así que no pueden divergir. Con `--dry-run` es lo único que dice el envelope, y su `status` es `"planned"` |
+| `removed` | array de strings | Rutas efectivamente eliminadas; **vacío con `--dry-run`** (una simulación no borra nada) y si no había nada |
+| `planned` | array de strings | Lo que la operación iba a borrar, también en el borrado real: simulacro y ejecución salen del mismo cálculo, así que no pueden divergir. Con `--dry-run` es el plan, y su `status` es `"planned"` |
+| `preserved` | array de objetos | `{path, reason}` con lo que el plan conserva a propósito; siempre presente |
+| `failed` | array | Destinos que no se pudieron borrar (vacío si todo fue bien); `cleanup` con `failed` no vacío sale con 23 (`cleanup_incomplete`) y `self uninstall` con restos, con 22 (`program_dir_kept`) o 24 (`uninstall_incomplete`) |
+| `kept` | array de strings | Solo `cleanup`: lo que queda a la espera del borrado diferido (por ejemplo, un archivo en uso) |
+| `unreadable` | array de strings | Solo `cleanup`: directorios del barrido que existen y no se pudieron listar |
 | `path_reverted` | boolean | Solo `self uninstall`: `true` si se revirtió la integración de `PATH` registrada en el recibo |
 
-El simulacro **no lleva `dry_run`**: con `status` `"planned"` y su recibo `planned`, la
-clave sería redundante.
+El simulacro **no lleva `dry_run` como clave del payload**: con `status` `"planned"` y su recibo `planned`, la
+clave sería redundante (`context.dry_run` sí informa de ello, como parte de la cabecera).
 
 **`self install --json`**
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"installed"` o `"repaired"` (reparación: el ejecutable se invoca desde el propio directorio de programa) |
+| `status` | string | `"installed"`, `"repaired"` (reparación: el ejecutable se invoca desde el propio directorio de programa) o `"cancelled"` (cancelación de la confirmación, exit 0) |
+| `context` | objeto | Además de lo común: `mode` (`install` o `repair`), `modify_path` (boolean; `false` con `--no-modify-path`) y `version` |
 | `reason` | string \| null | `null` en éxito; `"setup_failed"` si el programa quedó instalado pero la provisión no se completó (**exit 11**, éxito parcial) |
 | `install_dir` / `version` / `channel` | string | Lo que queda en el recibo de la instalación |
 | `path_integrated` | boolean | Si la integración de `PATH` está en pie (estado, no diff de esta pasada) |
@@ -277,10 +365,10 @@ clave sería redundante.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"updated"` (reemplazo aplicado), `"already_up_to_date"` (sin descarga, exit 0) o `"check"` (`--check`, sin cambios) |
+| `status` | string | `"updated"` (reemplazo aplicado), `"already_up_to_date"` (sin descarga, exit 0) o `"cancelled"`. **`--check` no lleva `status`**: es una consulta |
 | `reason` | string \| null | `null` en éxito; `"setup_failed"` si el programa quedó actualizado pero la provisión no se completó (**exit 11**, éxito parcial) |
-| `previous_version` / `version` | string | Versión anterior y versión objetivo del reemplazo |
-| `current` / `latest` / `update_available` | string, string, boolean | Solo en `"check"` y `"already_up_to_date"`: versión instalada, objetivo y si hay actualización |
+| `previous_version` / `version` | string | Solo en `"updated"`: versión anterior y versión objetivo del reemplazo |
+| `current` / `latest` / `update_available` | string, string, boolean | Con `--check`, `"already_up_to_date"` y `"cancelled"`: versión instalada y versión disponible. `update_available` (si hay actualización) solo lo lleva `--check` |
 | `channel` | string | Canal de la instalación registrada |
 | `models_cause` | objeto | **Solo en el parcial**: causa anidada del fallo de provisión |
 
@@ -288,12 +376,13 @@ clave sería redundante.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
+| `status` | string | `"cloned"`, o `"cancelled"` si cancelas la confirmación de `--force` |
 | `name` | string | Nombre de la voz registrada |
 | `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
 | `precomputed` | boolean | Ruta local: siempre `false` (motor efímero, sin residente que calentar). Ruta daemon: `true` (warm-on-clone iniciado; completitud en `GET /health`) |
 | `removed_speech` | array de strings | Etiquetas de los audios sintetizados que se borraron al sobrescribir la voz con `--force` (`[]` si no tenía) |
 
-Si el usuario cancela la confirmación de `--force`, la salida es `{"status": "cancelled", "name": "<nombre>", "removed_speech": []}`.
+Si el usuario cancela la confirmación de `--force`, `status` es `"cancelled"`, `removed_speech` es `[]` y `stages` es `[]`; no lleva `speech` ni `precomputed`.
 
 **`voice remove --json`**
 
@@ -309,6 +398,7 @@ Si el usuario cancela la confirmación, `status` es `"cancelled"` y `removed_spe
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
+| `status` | string | Siempre `"translated"` |
 | `translated` | string | Texto traducido (igual al de entrada si origen y destino coinciden, passthrough) |
 | `source_language` | string | El `--source-language` pedido |
 | `target_language` | string | El `--target-language` pedido |
@@ -357,7 +447,21 @@ ejecuta `doctor` están en
 [su tabla de chequeos](docs/CLI/commands/DOCTOR.md#los-chequeos). Si alguno
 falla, lo marca con `✗` y añade al final de su línea la indicación con la orden
 concreta (por ejemplo, ``→ ejecuta `ai-voice-interconnector setup` ``), y el comando
-escribe `Error: N comprobaciones fallan.` por stderr.
+escribe por stderr, también con `--json`, `Error: N comprobaciones fallan.` seguido de `Solución:` con las órdenes de las comprobaciones fallidas (o `Revisa las comprobaciones marcadas con ✗ en el diagnóstico` si ninguna trae orden):
+
+```
+Diagnóstico:
+  ✗ Recibo de instalación: no hay recibo de instalación
+  ✗ Comando en el PATH: el comando no resuelve a la instalación registrada
+  ✓ PATH sin duplicados: sin entradas duplicadas en el PATH
+  ✓ Restos pendientes: sin residuos de operaciones anteriores
+  ✗ Modelos: faltan: opus-mt-es-en, opus-mt-en-es, parakeet-tdt-v3, dpdfnet8, qwen3-tts-0.6b-base → ejecuta `ai-voice-interconnector setup`
+  ✓ ONNX Runtime: ONNX Runtime cargada desde %LOCALAPPDATA%\Programs\ai-voice-interconnector\onnxruntime.dll
+Error: 3 comprobaciones fallan.
+Solución: Ejecuta `ai-voice-interconnector setup`.
+```
+
+`doctor --repair` abre con `Reparación de los restos pendientes`, ejecuta la etapa única `Reparación`, cierra con `✓ Reparación completada en <total>` y después escribe el diagnóstico; con `--json` el envelope lleva además `status` `repaired` y las claves comunes.
 
 El veredicto es el código de salida: 0 si todos los chequeos pasan (tras una
 instalación correcta, `doctor` sale con 0) y 1 si alguno falla.
@@ -423,9 +527,9 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
 
 **Precisión de síntesis:** el motor tiene un único perfil de precisión, siempre activo; no hay variable ni opción para elegirlo.
 
-En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a una etapa de su catálogo, con los mismos textos que en la ruta directa. El stream de `/dub` añade dos eventos con texto del usuario, `transcript` y `translation` (claves `event`, `text` y `schema_version`), que el cliente muestra en cuanto llegan.
+En las operaciones pesadas (`synthesize`, `say`, `voice clone`, `transcribe` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a una etapa de su catálogo, con los mismos textos que en la ruta directa. El stream de `/dub` añade dos eventos con texto del usuario, `transcript` y `translation` (claves `event`, `text` y `schema_version`), que el cliente muestra en cuanto llegan.
 
-**Salida en la terminal.** Todo comando con etapas abre con una línea de contexto por stderr (por ejemplo `Doblaje es → en · voz default · archivo a.wav · daemon`), trabaja por etapas con su duración (`✓ Audio leído  0,1 s`, la etapa en curso se repinta debajo como `… Sintetizando… 1,3 s`) y cierra con `✓ <acción> en <duración total>`, también por stderr. Las esperas de la síntesis (turno, calentamiento del motor, carga de la voz) son textos vivos de la etapa de síntesis y nunca la cierran como hecha; cuando un comando solo tiene una etapa de trabajo, esa etapa no deja su línea y queda solo el cierre; y la línea de contexto se escribe después de validar la invocación y antes de tocar recursos, de modo que un error de invocación sale sin ella. Los resultados (textos, listas, rutas y planes de `--dry-run`) salen por stdout. Los errores salen como `Error: <qué pasó>.` y, cuando hay remedio, `Solución: <qué hacer>.`; el texto técnico de las bibliotecas solo aparece en el `error` de `--json` (tras ` Detalle:`). El color (verde, rojo, amarillo, atenuado) solo se emite en una terminal; `NO_COLOR` lo desactiva y la salida redirigida nunca lo lleva. `AVI_NO_PROGRESS=1` silencia solo las etapas, no el contexto, los resultados ni el cierre. Las duraciones se escriben `0,7 s`, `2 min 35 s` y `1 h 02 min`.
+**Salida en la terminal.** La estructura de stderr (cabecera, fases y etapas, separador y cierre), los símbolos, la salida fuera de la terminal y la cancelación están descritos en [Salida en la terminal](#salida-en-la-terminal). En este grupo, las esperas de la síntesis (turno, calentamiento del motor, carga de la voz) son textos vivos de la etapa de síntesis y nunca la cierran como hecha. El texto técnico de las bibliotecas solo aparece en el `error` de `--json` (tras ` Detalle:`).
 
 `--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con
 exit **2** antes de cualquier trabajo. `speech play`, `speech list` y `speech
@@ -444,17 +548,63 @@ ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo
 ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo --voice mi_voz
 ```
 
-**Qué esperar:** las mismas etapas de síntesis que `speech say` (ver más
-abajo) y, al terminar:
+**Qué esperar:** dos fases, `Voz` (la síntesis; con traducción, antes va la fase `Texto`) y `Guardado`. El resultado es la ruta del WAV persistido (`│ <ruta>` en la terminal; con stdout redirigido, `Audio: <ruta>`):
 
 ```
-stdout: <ruta del WAV persistido>
-stderr: Síntesis es · voz default · etiqueta saludo · local
-        ✓ Síntesis completada en 2,1 s · 3,4 s de audio
+Síntesis es · voz default · etiqueta muestra · local
+Voz → Guardado
+
+Voz
+  [1/2] ✓ Síntesis  5,0 s
+Guardado
+  [2/2] ✓ Guardado  0,2 s
+        │ %LOCALAPPDATA%\ai-voice-interconnector\data\speech\default\muestra.wav
+──────────────────────────────────────────────────
+✓ Síntesis completada en 5,2 s · 2,8 s de audio
+  Voz 5,0 s · Guardado 0,2 s
 ```
 
-Sin `--play` y sin traducción, la síntesis es la única etapa de trabajo y no deja su
-línea `✓ Voz sintetizada`: queda solo el cierre.
+Con `--skip-existing` sobre una etiqueta que ya existe, las dos etapas quedan omitidas, se conserva el audio y el cierre lo dice:
+
+```
+Síntesis es · voz default · etiqueta muestra · local
+Voz → Guardado
+
+Voz
+  [1/2] ○ Síntesis · ya existía
+Guardado
+  [2/2] ○ Guardado · ya existía
+        │ %LOCALAPPDATA%\ai-voice-interconnector\data\speech\default\muestra.wav
+──────────────────────────────────────────────────
+✓ Ya existía; se conserva sin sintetizar de nuevo.
+```
+
+Con `--json`, el envelope lleva `status` `synthesized` (o `skipped`), `audio_path`, `voice` y las [claves comunes](#referencia-de-esquemas---json):
+
+```json
+{
+  "audio_path": "%LOCALAPPDATA%\\ai-voice-interconnector\\data\\speech\\default\\muestra-json.wav",
+  "context": {
+    "label": "muestra-json",
+    "route": "local",
+    "source_language": "es",
+    "target_language": "es",
+    "voice": "default"
+  },
+  "schema_version": "7",
+  "stages": [
+    { "end_ms": 0, "phase": null, "stage": "validating", "start_ms": 0, "transient": true },
+    { "end_ms": 4000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
+    { "end_ms": 4300, "phase": "save", "stage": "saving", "start_ms": 4000 }
+  ],
+  "status": "synthesized",
+  "total_ms": 4300,
+  "voice": "default",
+  "warnings": []
+}
+```
+
+Las duraciones son orientativas.
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
@@ -538,14 +688,17 @@ ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 con Qwen3-TTS y el audio suena por los altavoces según se genera: la voz empieza
 en torno a un segundo tras la síntesis (más el arranque del motor en modo
 directo), no al final. Con el daemon activo, el CLI delega vía HTTP y el modelo
-ya está caliente en memoria. Salida típica (stderr; stdout queda vacío):
+ya está caliente en memoria. Salida típica en modo directo (stderr; stdout queda vacío); la síntesis y la reproducción corren en paralelo, y el `primer audio` es una sola medida, la misma en la etapa y en el cierre:
 
 ```
 Lectura en voz alta es · voz default · local
-✓ Primer audio  1,2 s
-✓ Reproducido  3,0 s
-✓ Reproducción completada en 4,3 s · primer audio 1,2 s
+  [1/2] ✓ Síntesis      6,5 s · primer audio 3,0 s
+  [2/2] ✓ Reproducción  5,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 8,0 s · primer audio 3,0 s
 ```
+
+Con `--json`, stdout lleva el envelope (`status` `reproduced`, `voice`, `first_audio_ms`, `stalls` y las claves comunes) y stderr lo mismo que arriba. Las duraciones son orientativas.
 
 El audio no pasa por ningún archivo, así que el texto no dice ruta; quien quiera
 el fichero en disco usa `speech synthesize`, que lo persiste y sí devuelve su
@@ -711,23 +864,56 @@ ai-voice-interconnector speech transcribe --mic --source-language es
 ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
 ```
 
-**Qué esperar:**
+**Qué esperar:** dos fases, `Entrada` (la lectura del archivo, o la grabación con `--mic`) y `Texto` (la transcripción). El texto transcrito es el resultado (`│ <texto>` bajo la etapa en la terminal):
 
 ```
-Hola, ¿cómo estás?
+Transcripción es · archivo clip8.wav · local
+Entrada → Texto
+
+Entrada
+  [1/2] ✓ Lectura        0,2 s
+Texto
+  [2/2] ✓ Transcripción  3,5 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
+──────────────────────────────────────────────────
+✓ Transcripción completada en 3,7 s
+  Entrada 0,2 s · Texto 3,5 s
 ```
 
-Con `--mic`, la etapa de captura muestra por stderr `● Grabando m:ss / m:ss`
+Con stdout redirigido a un archivo, el archivo recibe `Transcripción: <texto>` y el mismo resultado sale además por stderr (ver [Salida en la terminal](#salida-en-la-terminal)); con `--json`, stdout lleva solo el envelope:
+
+```json
+{
+  "context": {
+    "file": "clip8.wav",
+    "input": "file",
+    "route": "local",
+    "source_language": "es"
+  },
+  "schema_version": "7",
+  "source_language": "es",
+  "stages": [
+    { "end_ms": 200, "phase": "input", "stage": "reading", "start_ms": 0 },
+    { "end_ms": 3700, "phase": "text", "stage": "transcribing", "start_ms": 200 }
+  ],
+  "status": "transcribed",
+  "text": "los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.",
+  "total_ms": 3700,
+  "warnings": []
+}
+```
+
+Las duraciones son orientativas. Con `--mic`, la etapa de captura muestra por stderr `● Grabando m:ss / m:ss`
 con un medidor de nivel y, en push-to-talk, `Enter para detener`; sin terminal
 escribe una sola vez `Grabando (máximo m:ss)…`. El push-to-talk captura hasta
 que el usuario presiona Enter (o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS`, que
 avisa `Se alcanzó el límite de grabación`) antes de transcribir. Si la grabación
 no contiene voz (el tramo más fuerte no supera −43 dBFS) avisa
-`No se detectó voz en la grabación` y continúa. El texto transcrito sale por
-stdout; el contexto (`Transcripción es · archivo a.wav · local`), las etapas y el
+`No se detectó voz en la grabación` y continúa (el aviso `⚠` queda bajo la etapa `Grabación`). El texto transcrito sale por
+stdout; la cabecera (`Transcripción es · archivo a.wav · local`), las etapas y el
 cierre `✓ Transcripción completada en <total>` salen por stderr.
 
-Con `--json`, emite `{"text", "source_language"}` y nada por stdout salvo ese objeto.
+Con `--json`, emite `{"status": "transcribed", "text", "source_language"}` más las claves comunes y nada por stdout salvo ese objeto.
 `source_language` es el valor de `--source-language` (`es` o `en`).
 
 Si el audio no contiene voz reconocible, el comando sale con código 2 y
@@ -740,7 +926,7 @@ Si el audio no contiene voz reconocible, el comando sale con código 2 y
 - `--duration N`: Duración fija de grabación en segundos; solo válido junto a `--mic`
 - `--source-language` (requerido): Idioma hablado en el audio (`es` o `en`)
 - `--daemon` / `--no-daemon`: igual que en `speech say` (despacho de tres modos; la captura del audio siempre ocurre en el cliente)
-- `--json`: Emite `{"text", "source_language"}`
+- `--json`: Emite `{"status": "transcribed", "text", "source_language"}` y las claves comunes
 
 La captura de micrófono usa el backend multiplataforma `cpal` (único, sin
 ramas por sistema operativo): graba a la tasa y formato nativos del
@@ -771,7 +957,28 @@ ai-voice-interconnector speech denoise entrada.mp4
 ai-voice-interconnector speech denoise voz.wav --preset default --json
 ```
 
-`studio` es el preset por omisión; `--preset default` selecciona el perfil sin normalización. El modelo DPDFNet debe estar provisionado con `setup`; FFmpeg se resuelve desde el paquete de AVI, sin fallback a `PATH`: el binario integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. El flag global `--json` produce JSONL de eventos y resultados (y un único envelope `{error, reason}` si la validación previa al lote falla). En texto, abre con `Limpieza de ruido · N archivos`, muestra por stderr una etapa por archivo con su porcentaje (`… [1/2] entrada.mp4  42 %  <etapa>  3,1 s`), escribe por stdout la ruta de cada archivo generado, y cierra con `✓ Limpieza de ruido completada en <total> · N archivos limpios`; `--dry-run` escribe el plan por stdout (`<entrada> → <salida> (se procesaría)`) y `Simulación: no se ha modificado nada.` por stderr. Un modelo ausente sale con exit **4** (`model_missing`) y un archivo sin audio con exit **2** (`invalid_audio`). Para opciones de lote, colisiones, formatos y límites, consulta la [referencia completa](docs/CLI/commands/SPEECH.md#speech-denoise).
+`studio` es el preset por omisión; `--preset default` selecciona el perfil sin normalización. El modelo DPDFNet debe estar provisionado con `setup`; FFmpeg se resuelve desde el paquete de AVI, sin fallback a `PATH`: el binario integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. El flag global `--json` emite un único envelope por stdout, sin excepción de formato: `status` `completed` (o `planned` con `--dry-run`), `files` (un objeto por archivo con `input`, `output`, `status` y `message`), `summary` (`ok`, `skipped` y `failed`) y las claves comunes, con una etapa `denoising` por archivo. Si algún archivo falla, el envelope es el de error (`error`, `reason`, `files`, `summary` y las claves comunes, con las etapas fallidas marcadas `failed: true`) y el comando sale con el código del lote; una validación previa al lote que falla emite el envelope `{error, reason}` habitual. En texto, abre con `Limpieza de ruido · N archivos`, muestra por stderr una etapa numerada por archivo, escribe la ruta de cada archivo generado como resultado `│` y cierra con `✓ Limpieza de ruido completada en <total> · N archivos limpios`:
+
+```
+Limpieza de ruido · 2 archivos
+  [1/2] ✓ clip3.wav  4,0 s · 286,6 KB
+        │ C:\Users\usuario\Audio\limpios\clip3_denoised.wav
+  [2/2] ✓ clip8.wav  8,5 s · 766,6 KB
+        │ C:\Users\usuario\Audio\limpios\clip8_denoised.wav
+──────────────────────────────────────────────────
+✓ Limpieza de ruido completada en 12,5 s · 2 archivos limpios
+```
+
+`--dry-run` no tiene etapas: escribe el plan por stdout (`<entrada> → <salida> (se procesaría)`) y cierra sin borrar nada:
+
+```
+Limpieza de ruido · 2 archivos
+C:\Users\usuario\Audio\clip3.wav → C:\Users\usuario\Audio\limpios\clip3_denoised.wav (se procesaría)
+C:\Users\usuario\Audio\clip8.wav → C:\Users\usuario\Audio\limpios\clip8_denoised.wav (se procesaría)
+✓ Simulación completada · no se ha borrado nada
+```
+
+Con `--json`, la simulación emite un envelope `planned` con `files` (cada uno con `status` `dry-run`), `summary` y `context`, sin etapas. Las duraciones son orientativas. Un modelo ausente sale con exit **4** (`model_missing`) y un archivo sin audio con exit **2** (`invalid_audio`). Para opciones de lote, colisiones, formatos y límites, consulta la [referencia completa](docs/CLI/commands/SPEECH.md#speech-denoise).
 
 ---
 
@@ -782,12 +989,12 @@ traduce si `--source-language` difiere de `--target-language`, sintetiza con
 la voz elegida y reproduce el resultado. Reutiliza las etapas de
 `speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
 de síntesis; no guarda nada en el almacén (no tiene `--label`). En modo texto
-imprime por stdout `Transcripción: <texto>` en cuanto termina de transcribir y,
-si los idiomas difieren, `Traducción: <texto>` en cuanto termina de traducir:
-ambas salen antes de que empiece a sonar el audio. El contexto, las etapas y el
+escribe la transcripción como resultado (`Transcripción: <texto>` por stdout si no es una terminal) en cuanto termina de transcribir y,
+si los idiomas difieren, la traducción (`Traducción: <texto>`) en cuanto termina de traducir:
+ambas salen antes de que empiece a sonar el audio. La cabecera, las etapas y el
 cierre (`✓ Doblaje completado en <total> · primer audio <t>`) salen por stderr.
 Con `--json` emite
-`{"status":"dubbed","text","translated","first_audio_ms","stalls"}`, donde `text` es la
+`{"status":"dubbed","text","translated","first_audio_ms","stalls"}` más las claves comunes, donde `text` es la
 transcripción y `translated` el texto sintetizado (siempre presente), y **sin
 `audio_path`**: el audio suena según se sintetiza y no se guarda. Como `say`,
 `dub` es humo sin puerta de calidad sobre lo que sonó.
@@ -811,7 +1018,58 @@ ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --
 reproduce la síntesis con la voz (`default` si no pasas `-v`) mientras se genera. Con `--mic`, la
 etapa de captura muestra `● Grabando m:ss / m:ss` con un medidor de nivel (y, sin `--duration`, captura en
 modo push-to-talk hasta que presiones Enter o hasta el techo
-`AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir; si no se detecta voz, avisa y continúa.
+`AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir; si no se detecta voz, avisa y continúa. Con un archivo y los idiomas distintos, la salida es:
+
+```
+Doblaje es → en · voz default · archivo clip8.wav · local
+Entrada → Texto → Voz
+
+Entrada
+  [1/5] ✓ Lectura        0,2 s
+Texto
+  [2/5] ✓ Transcripción  3,5 s
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
+  [3/5] ✓ Traducción     0,5 s
+        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together with their respective databases.
+Voz · streaming
+  [4/5] ✓ Síntesis       10,0 s · primer audio 3,0 s
+  [5/5] ✓ Reproducción   9,5 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Doblaje completado en 16,7 s · primer audio 3,0 s
+  Entrada 0,2 s · Texto 4,0 s · Voz 12,5 s
+```
+
+Con `--json`, el envelope trae `text`, `translated`, `first_audio_ms`, `stalls` y, en `stages`, cinco etapas (`reading`, `transcribing`, `translating`, `synthesizing` y `playing`), las dos últimas solapadas porque la reproducción corre en paralelo con la síntesis:
+
+```json
+{
+  "context": {
+    "file": "clip8.wav",
+    "input": "file",
+    "route": "local",
+    "source_language": "es",
+    "target_language": "en",
+    "voice": "default"
+  },
+  "first_audio_ms": 3000,
+  "schema_version": "7",
+  "stages": [
+    { "end_ms": 200, "phase": "input", "stage": "reading", "start_ms": 0 },
+    { "end_ms": 3700, "phase": "text", "stage": "transcribing", "start_ms": 200 },
+    { "end_ms": 4200, "phase": "text", "stage": "translating", "start_ms": 3700 },
+    { "end_ms": 14200, "phase": "voice", "stage": "synthesizing", "start_ms": 4200 },
+    { "end_ms": 16700, "phase": "voice", "stage": "playing", "start_ms": 7200 }
+  ],
+  "stalls": 0,
+  "status": "dubbed",
+  "text": "los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.",
+  "total_ms": 16700,
+  "translated": "the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together with their respective databases.",
+  "warnings": []
+}
+```
+
+Las duraciones son orientativas.
 
 **Opciones:**
 - `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida)
@@ -853,13 +1111,20 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 `avi_tts::clone_voice` con el modelo Base, y confirma por stderr (error `model_missing` → `setup`):
 
 ```
-Clonación de la voz mi_voz · archivo condicion.wav · local
-✓ Voz mi_voz clonada en 23,7 s
+Clonación de la voz muestra · archivo clip8.wav · local
+Entrada → Voz
+
+Entrada
+  [1/3] ✓ Lectura    0,0 s
+Voz
+  [2/3] ✓ Clonación  1,5 s
+  [3/3] ✓ Guardado   0,0 s
+──────────────────────────────────────────────────
+✓ Voz muestra clonada en 1,5 s
+  Entrada 0,0 s · Voz 1,5 s
 ```
 
-Con archivo y sin `--denoise`, el clonado es la única etapa de trabajo y no deja su
-línea `✓ Voz clonada`. Con `--denoise` se añade la etapa `Limpiando el ruido…`
-(`✓ Ruido limpiado`) y cada etapa conserva su línea.
+Las duraciones son orientativas. Con archivo, las etapas son `Lectura`, `Clonación` y `Guardado` (con `--mic`, `Grabación` en lugar de `Lectura`); con `--denoise` se añade la etapa `Limpieza` en la fase `Entrada`. Una referencia de menos de 5 s deja un `⚠` bajo `Lectura` (ver la muestra de [Salida en la terminal](#salida-en-la-terminal)). Con `--json`, el envelope lleva `status` `cloned`, `name`, `speech`, `precomputed`, `removed_speech` y las claves comunes.
 
 La única referencia de habla produce un `reference.qvoice` (bajo
 `data_dir()/voices/mi_voz/`); el WAV de referencia no se persiste.
@@ -891,7 +1156,7 @@ archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_f
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
-- `--speech-reference, -s` (requerido): Audio de referencia de habla (10+ segundos de habla limpia); es el único audio de referencia
+- `--speech-reference, -s` (requerido): Audio de referencia de habla (al menos 5 s de habla continua; se recomiendan 10 s o más; máximo 30 s); es el único audio de referencia
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima); borra también sus audios sintetizados guardados
 - `--yes, -y`: No pedir confirmación al borrar los audios sintetizados de la voz sobrescrita
 - `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
@@ -901,7 +1166,7 @@ archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_f
   referencia de esquemas más arriba)
 
 **Requisitos del audio:**
-- Duración: 10+ segundos recomendados para `--speech-reference`
+- Duración: al menos 5 s de habla continua (se recomiendan 10 s o más); por debajo de 5 s el comando avisa con `⚠` y clona igualmente. Máximo 30 s
 - Idioma: Español
 - Calidad: Sin ruido de fondo, habla clara
 - Formato: WAV 16-bit
@@ -938,20 +1203,19 @@ ai-voice-interconnector voice remove --name mi_voz
 ai-voice-interconnector voice remove --name mi_voz --yes
 ```
 
-**Qué esperar:**
+**Qué esperar:** abre con la cabecera `Borrado de la voz <nombre>`, muestra el plan, pregunta y cierra. Con `--yes`:
 
 ```
-Se borrará la voz mi_voz y sus 2 audios sintetizados:
-  voz: <ruta> (…)
-¿Borrar la voz mi_voz y sus 2 audios sintetizados? [s/N] s
-✓ Voz mi_voz borrada en 0,1 s · y 2 audios sintetizados
+Borrado de la voz muestra-corta
+Se borrará la voz muestra-corta:
+  %LOCALAPPDATA%\ai-voice-interconnector\data\voices\muestra-corta (4,1 KB)
+✓ Voz muestra-corta borrada en 0,0 s
 ```
 
 El comando pregunta siempre, tenga o no audios sintetizados: muestra el plan y
-pide confirmación `[s/N]` (por defecto, no; sin audios, la pregunta es
-`¿Borrar la voz mi_voz?`). Sin terminal exige `--yes/-y`; sin él sale
-con exit **2** (`confirmation_required`) y no borra nada. Si cancelas, sale con exit
-**0** y `Cancelado; no se ha borrado nada.`.
+pide confirmación `[s/N]` (por defecto, no). Con audios sintetizados, el cierre añade ` · y N audios sintetizados`. Sin terminal exige `--yes/-y`; sin él sale
+con exit **2** (`confirmation_required`) y no borra nada. Si cancelas, tras el separador escribe `Cancelado; no se ha borrado nada.` y sale con exit
+**0** (`status` `cancelled` con `--json`). Con `--json`, el envelope lleva `status` `removed`, `voice`, `removed_speech` y las claves comunes.
 
 Las voces de fábrica (como `default`) son de solo lectura y no pueden
 eliminarse; el comando lo indica y termina con error si lo intentas. Un nombre
@@ -976,22 +1240,43 @@ ai-voice-interconnector translate --text "Hello there" --source-language en --ta
 **Qué esperar:**
 
 ```
-stdout: Good morning.
-stderr: Traducción es → en · local
-        ✓ Traducción completada en 0,5 s
+Traducción es → en · local
+  │ "Hello, world."
+✓ Traducción completada en 0,4 s
 ```
 
-La traducción es la única etapa del comando y no deja su línea `✓ Traducido`; con
-`--json` no hay cierre y esa línea sí sale por stderr.
+La traducción es la única etapa del comando y no deja su línea numerada: queda el resultado y el cierre. Fuera de la terminal, el resultado sale por stdout como `Traducción: <texto>`. Con el daemon en marcha la cabecera dice `· daemon` y el cierre es más breve (`✓ Traducción completada en 0,1 s`). Las duraciones son orientativas.
 
-Con `--json`, emite `{"translated", "source_language", "target_language"}` (ver la referencia
-de esquemas) y nada por stdout salvo ese objeto.
+Con `--json`, emite `{"status": "translated", "translated", "source_language", "target_language"}` más las claves comunes (ver la referencia
+de esquemas) y nada por stdout salvo ese objeto:
+
+```json
+{
+  "context": {
+    "route": "local",
+    "source_language": "es",
+    "target_language": "en"
+  },
+  "schema_version": "7",
+  "source_language": "es",
+  "stages": [
+    { "end_ms": 300, "phase": null, "stage": "translating", "start_ms": 0 }
+  ],
+  "status": "translated",
+  "target_language": "en",
+  "total_ms": 300,
+  "translated": "Hello, world.",
+  "warnings": []
+}
+```
+
+Si origen y destino coinciden, no hay cabecera ni etapas: solo el resultado (`│ "Hola, mundo."` en la terminal) y el envelope sin claves comunes.
 
 **Opciones:**
 - `--text`/`-t` (requerido): Texto a traducir, sin límite de longitud
 - `--source-language` (opcional, default `es`): Idioma de origen del texto (`es` o `en`)
 - `--target-language` (opcional, default `en`): Idioma destino de la traducción (`es` o `en`)
-- `--json`: Emite `{"translated", "source_language", "target_language"}`
+- `--json`: Emite `{"status", "translated", "source_language", "target_language"}` y las claves comunes
 
 **Passthrough:** si origen y destino coinciden, devuelve el texto intacto sin
 cargar ningún modelo. El modelo de traducción exigido es `opus-mt-<par>`, con sus
@@ -1011,11 +1296,41 @@ ai-voice-interconnector cleanup --voices              # voces no-fábrica + arra
 ai-voice-interconnector cleanup --synthetic-speech    # raíz speech/ entera (incluye default)
 ai-voice-interconnector cleanup --model               # la raíz de modelos: entera si es exclusiva, o solo lo atribuible si es compartida
 ai-voice-interconnector cleanup --all                 # las tres categorías + configuración, logs y estado del daemon (sin programa ni PATH)
-ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con status planned y su recibo planned)
+ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0, --json con status planned, el plan en planned y removed vacío)
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` escribe el plan por stdout sin borrar **y sin tomar el bloqueo** (y termina con `Simulación: no se ha modificado nada.` por stderr); `--yes/-y` omite la confirmación interactiva (`¿Borrar lo indicado? [s/N]`), y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Al borrar cierra con `✓ Limpieza completada en <total> · N rutas borradas` por stderr, y si no hay nada que borrar, con `✓ No había nada que limpiar.` sin pedir confirmación. Con `--json` emite `{"schema_version":"7","status":"cleanup_complete","reason":null,"removed":[...],"planned":[...]}` al borrar de verdad, y `{"schema_version":"7","status":"planned","reason":null,"removed":[...],"planned":[...]}` con `--dry-run` (el mismo plan como recibo, sin `dry_run`: el `planned` ya dice que nada se modificó). Todo es recuperable: `setup` re-descarga los modelos y
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**, y cierra con `✓ Simulación completada · no se ha borrado nada`; `--yes/-y` omite la confirmación interactiva (`¿Borrar lo indicado? [s/N]`), y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada.
+
+**Salida.** Abre con la cabecera `Limpieza · <categorías>` (con `--dry-run`, `· simulación`), el plan de borrado y la pregunta. Si el daemon estaba en marcha, la primera etapa es `Parada del daemon`, con un `⚠` debajo que avisa de que se detuvo; la etapa `Limpieza de datos` borra. Con una sola etapa de trabajo no deja su línea numerada. Cierra con `✓ Limpieza completada en <total> · N rutas borradas`, o con `✓ No había nada que limpiar.` sin pedir confirmación. Con el daemon en marcha:
+
+```
+Limpieza · voces
+Se borrarán 3 rutas, 12,3 KB en total:
+  voces: %LOCALAPPDATA%\ai-voice-interconnector\data\voices\muestra (4,1 KB)
+  voces: %LOCALAPPDATA%\ai-voice-interconnector\data\voices\muestra-daemon (4,1 KB)
+  voces: %LOCALAPPDATA%\ai-voice-interconnector\data\voices\muestra-limpia (4,1 KB)
+  [1/2] ✓ Parada del daemon  0,5 s
+        ⚠ El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con `ai-voice-interconnector daemon start`.
+  [2/2] ✓ Limpieza de datos  0,0 s
+──────────────────────────────────────────────────
+✓ Limpieza completada en 0,5 s · 3 rutas borradas
+```
+
+Sin daemon, la misma orden deja solo el plan y el cierre (`✓ Limpieza completada en 0,0 s · 1 ruta borrada`). Si contestas que no a la pregunta, tras el separador solo aparece `Cancelado; no se ha borrado nada.` (exit 0, `status` `cancelled`). La simulación de `--all`:
+
+```
+Limpieza · todo · simulación
+Se borrarán 3 rutas, 6,7 GB en total:
+  modelos: %LOCALAPPDATA%\ai-voice-interconnector\cache\models (6,7 GB)
+  temporales: %LOCALAPPDATA%\ai-voice-interconnector\cache\tmp (0 B)
+  datos de usuario: %LOCALAPPDATA%\ai-voice-interconnector\data (106,6 KB)
+  bloqueo: %LOCALAPPDATA%\ai-voice-interconnector\.ai-voice-interconnector.lock
+  bloqueo: %LOCALAPPDATA%\ai-voice-interconnector\.ai-voice-interconnector.gate
+✓ Simulación completada · no se ha borrado nada
+```
+
+Con `--json` emite `status` `cleanup_complete` al borrar de verdad y `planned` con `--dry-run`, con el plan en `planned` y **`removed` vacío en la simulación**; ambos llevan `preserved`, `failed`, `kept`, `unreadable` y las claves comunes (la simulación no lleva etapas). Si alguna ruta no se pudo borrar, la etapa `Limpieza de datos` queda `✗` con un `⚠` por ruta, el `Error:` lo dice y el comando sale con 23 (`cleanup_incomplete`): borró lo que pudo, y lo no borrado va en `failed`. Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -1026,7 +1341,7 @@ ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y
 borra el estado, revierte la integración de `PATH` y borra el programa, **en ese orden**.
 
 ```bash
-ai-voice-interconnector self uninstall --dry-run      # escribe el plan con tamaños por stdout; no borra nada
+ai-voice-interconnector self uninstall --dry-run      # muestra el plan con tamaños; no borra nada
 ai-voice-interconnector self uninstall               # pide confirmación [s/N]
 ai-voice-interconnector self uninstall --yes         # no interactivo (obligatorio sin terminal)
 ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y audios sintetizados
@@ -1035,11 +1350,29 @@ ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y
 **Qué esperar:** el plan lista, con tamaños, lo que se va a borrar y lo que **no** se tocará
 —la integración de `PATH` se *retira* (`PATH: se quitará la entrada <ruta> del PATH de tu usuario.`), no se borra el archivo, y una caché HF compartida se
 conserva—, con cada ruta etiquetada por su categoría (`modelos: <ruta> (5,9 GB)`). Pregunta
-`¿Desinstalar el programa y borrar lo indicado? [s/N]` y cierra con `✓ Desinstalación completada en <total>`
-por stderr (o `✓ No había nada que desinstalar.`). Con `--dry-run`, el plan sale por stdout y
-`Simulación: no se ha modificado nada.` por stderr. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
-(exit 2) y no borra nada. Cancelar la confirmación no es un error: `status` `cancelled` y
-exit 0. Con `--json` emite `{"schema_version":"7","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin clave `dry_run`).
+`¿Desinstalar el programa y borrar lo indicado? [s/N]`. Las etapas son `Parada del daemon` (si estaba en marcha), `Estado`, `Reversión del PATH`, `Programa` y `Bloqueos`, y cierra con `✓ Desinstalación completada en <total>` (o `✓ No había nada que desinstalar.`). Con `--dry-run`, la cabecera lleva `· simulación`, no hay etapas y cierra con `✓ Simulación completada · no se ha borrado nada`. Esta es la desinstalación real con `--yes` (en Windows, desde el ejecutable instalado):
+
+```
+Desinstalación de ai-voice-interconnector
+Se desinstalará ai-voice-interconnector, incluido el estado de usuario.
+4 rutas a tocar y 0 rutas conservadas:
+  modelos: %LOCALAPPDATA%\ai-voice-interconnector\cache\models (6,7 GB)
+  datos de usuario: %LOCALAPPDATA%\ai-voice-interconnector\data (0 B)
+  carpeta vacía: %LOCALAPPDATA%\ai-voice-interconnector\cache
+  programa: %LOCALAPPDATA%\Programs\ai-voice-interconnector (257,0 MB)
+  no se tocará: los datos que el sistema operativo guarda por su cuenta (permisos, reglas del firewall, preferencias de audio); cómo borrarlos: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/blob/v0.47.0/docs/CLI/commands/SELF.md#datos-del-sistema-operativo
+  [1/4] ✓ Estado              0,6 s
+  [2/4] ✓ Reversión del PATH  0,0 s
+  [3/4] ✓ Programa            2,0 s
+        ⚠ El directorio se borrará al terminar este proceso: %LOCALAPPDATA%\Programs\ai-voice-interconnector.
+  [4/4] ✓ Bloqueos            0,0 s
+──────────────────────────────────────────────────
+✓ Desinstalación completada en 2,6 s
+```
+
+El `⚠` bajo `Programa` indica el borrado diferido (`removal_scheduled`). Las duraciones son orientativas. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
+(exit 2) y no borra nada. Cancelar la confirmación no es un error: tras el separador solo aparece `Cancelado; no se ha borrado nada.`, `status` `cancelled` y
+exit 0. Con `--json` emite `status`, `reason`, `removed`, `planned`, `preserved`, `failed`, `path_reverted` y las claves comunes; con `--dry-run` el `status` es `planned`, `planned` lleva el plan y **`removed` va vacío** (sin etapas). Si quedan restos, sale con 22 (`program_dir_kept`, el directorio de programa no se pudo borrar ni programar) o con 24 (`uninstall_incomplete`, otras rutas en `failed`): el resto de la operación se completa.
 
 **Sin `--keep-data` se borra la raíz de datos entera**, no el plan de `cleanup --all`, y la
 diferencia es deliberada: `cleanup --all` protege las voces de fábrica porque van embebidas
@@ -1074,11 +1407,35 @@ ai-voice-interconnector self install --force          # resuelve un conflicto en
 
 Ejecutado **desde dentro** del directorio de programa, `self install` **repara** en vez de
 instalar: reaplica la integración de `PATH`, los permisos, la limpieza de cuarentena y el
-recibo sin copiar archivos. Antes de actuar pregunta `¿Instalar el programa?` (o
-`¿Reparar la instalación?`) y, al terminar, cierra por stderr con
-`✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en`), seguido de dos
-detalles atenuados, `PATH: …` y `Modelos: …`. Una instalación nueva muestra la etapa
-`Copiando el programa…`; una actualización o reparación, `Reemplazando el programa…`. Un ejecutable **sin bundle alrededor** (por ejemplo
+recibo sin copiar archivos. Abre con la cabecera `Instalación de ai-voice-interconnector <versión>` (o `Reparación de …`, con ` · sin modificar el PATH` si se pasó `--no-modify-path`), muestra el plan (`Programa`, `Comando`, `PATH` y `Modelos`) y pregunta `¿Instalar el programa?` (o
+`¿Reparar la instalación?`). Las etapas son `Copia` (o `Reemplazo` si ya había una instalación), `Integración en el PATH` (si se modifica), `Recibo` y una `Descarga` por modelo que falte; en reparación no hay etapa de copia. El cierre es la última línea: `✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en`), sin nada después. Una instalación nueva con `--no-modify-path`, con los modelos ya presentes:
+
+```
+Instalación de ai-voice-interconnector 0.47.0 · sin modificar el PATH
+Se instalará ai-voice-interconnector 0.47.0 (x86_64-pc-windows-msvc)
+  Programa:  %LOCALAPPDATA%\Programs\ai-voice-interconnector
+  Comando:   %LOCALAPPDATA%\Programs\ai-voice-interconnector\ai-voice-interconnector.exe
+  PATH:      no se modifica (--no-modify-path); invoca el comando por su ruta completa.
+  Modelos:   ya están provisionados en %LOCALAPPDATA%\ai-voice-interconnector\cache\models
+  [1/2] ✓ Copia   0,1 s · %LOCALAPPDATA%\Programs\ai-voice-interconnector
+  [2/2] ✓ Recibo  0,0 s
+──────────────────────────────────────────────────
+✓ ai-voice-interconnector 0.47.0 instalado en 0,1 s
+```
+
+Y una reparación, que no copia archivos:
+
+```
+Reparación de ai-voice-interconnector 0.47.0 · sin modificar el PATH
+Se reparará ai-voice-interconnector 0.47.0 (x86_64-pc-windows-msvc)
+  Programa:  %LOCALAPPDATA%\Programs\ai-voice-interconnector   (reparación: no se copian archivos)
+  Comando:   %LOCALAPPDATA%\Programs\ai-voice-interconnector\ai-voice-interconnector.exe
+  PATH:      no se modifica (--no-modify-path); invoca el comando por su ruta completa.
+  Modelos:   ya están provisionados en %LOCALAPPDATA%\ai-voice-interconnector\cache\models
+✓ ai-voice-interconnector 0.47.0 reparado en 0,0 s
+```
+
+Con `--json`, `context` lleva `mode`, `modify_path` y `version`. Si el usuario cancela, tras el separador solo aparece `Cancelado.`. Las duraciones son orientativas. Un ejecutable **sin bundle alrededor** (por ejemplo
 `target\debug`) responde `bundle_invalid` (15) indicando `cargo xtask install`: no es una
 instalación rota, es que no hay nada alrededor que instalar.
 
@@ -1088,7 +1445,7 @@ fallo viaja anidado en `models_cause`: `network_error` si falló el transporte o
 servidor, o `model_unavailable` si Hugging Face rechaza el modelo fijado. Es un
 **éxito parcial**: con `network_error` basta reintentar con `setup`; con
 `model_unavailable` reintentar no lo resuelve y hace falta una versión que vuelva a fijar
-el modelo.
+el modelo. En el desenlace parcial la última etapa `Descarga` queda `✗`, siguen el separador y el `Error:` con su línea `Solución:` (repetir la descarga con `ai-voice-interconnector setup`), y el comando sale con 11.
 
 ---
 
@@ -1104,7 +1461,21 @@ ai-voice-interconnector self update --force               # reinstala la misma v
 ai-voice-interconnector self update --no-setup --yes      # sin provisión y sin confirmación
 ```
 
-**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y cierre `✓ Actualizado de <anterior> a <nueva> en <total>` por stderr (abre con `Actualización desde la versión <anterior>`; `--check` escribe por stdout `Hay una versión nueva: A → B.` o `Ya tienes la última versión (V).`). Sin reinicio automático del daemon: si estaba activo, un aviso indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` → `externally_managed` (12) con el comando correcto. Un recibo de instalación ilegible hace fallar el comando (`self_update_failed`) con un mensaje que nombra el fichero. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial, y el consejo depende de la causa en `models_cause` (con `network_error` basta reintentar con `setup`; con `model_unavailable` no). Una versión pedida que no existe en GitHub (404) sale con `release_unavailable` (1), y un fallo del disco local durante la descarga con `io_error` (1).
+**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y cierre `✓ Actualizado de <anterior> a <nueva> en <total>` por stderr. Abre con la cabecera `Actualización desde la versión <anterior>`; las etapas son `Descarga`, `Verificación`, `Parada del daemon` y `Reemplazo`, y las descargas del `setup` hijo van anidadas dentro de `Reemplazo`, sin cabecera ni cierre propios. **`--check` no escribe cabecera ni etapas**: imprime por stdout `Versión instalada: A` y `Versión disponible: B`, y con `--json` emite `{current, latest, update_available, channel, reason}` sin `status`:
+
+```
+Versión instalada: 0.47.0
+Versión disponible: 0.47.0
+```
+
+Con la versión ya al día, `self update` no descarga nada y termina con éxito:
+
+```
+Actualización desde la versión 0.47.0
+✓ Ya tienes la última versión (0.47.0)
+```
+
+La actualización con reemplazo real (descarga, verificación, traspaso al binario nuevo) cierra con `✓ Actualizado de A a B en <total>`; no se muestra una muestra porque depende de que haya una versión nueva publicada. Sin reinicio automático del daemon: si estaba activo, un aviso indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` → `externally_managed` (12) con el comando correcto. Un recibo de instalación ilegible hace fallar el comando (`self_update_failed`) con un mensaje que nombra el fichero. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial, y el consejo depende de la causa en `models_cause` (con `network_error` basta reintentar con `setup`; con `model_unavailable` no). Una versión pedida que no existe en GitHub (404) sale con `release_unavailable` (1), y un fallo del disco local durante la descarga con `io_error` (1).
 
 - **macOS (Homebrew)**: `brew upgrade --cask ai-voice-interconnector`.
 
@@ -1143,8 +1514,24 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 ```
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
-y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su dirección real, que se confirma por `/health`), un fallo con su causa (puerto ocupado, voz inexistente) o la muerte del proceso. Si arranca, escribe el PID file `data_dir()/daemon.pid` (con `resident_pid` y la dirección real) y confirma con
-el cierre por stderr cuando el motor está listo: `✓ Daemon listo en <total> · pid N`. «Iniciando el daemon…» dura lo que dura el arranque real y «Calentando el motor…» empieza después, con hasta 10 s de espera. Si ese plazo vence o el calentamiento falla, el daemon sigue en marcha y el propio cierre lo dice en una línea (`✓ Daemon en marcha en <total> · pid N · el motor sigue calentándose; ...` o `... · falló el calentamiento del motor; ...`), sin aviso aparte; `daemon status` dice cuándo está listo. Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` escribe por stdout una línea como `Daemon: en marcha (pid 1234, puerto 8765, motor listo).`, `Daemon: en marcha, pero no responde: <motivo>.` o `Daemon: detenido.`; en `--json`, estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
+y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su dirección real, que se confirma por `/health`), un fallo con su causa (puerto ocupado, voz inexistente) o la muerte del proceso. Si arranca, escribe el PID file `data_dir()/daemon.pid` (con `resident_pid` y la dirección real) y lo cuenta en dos etapas bajo la cabecera `Daemon · <dirección>`: `Arranque` (dura lo que dura el arranque real) y `Calentamiento` (empieza después, con hasta 10 s de espera):
+
+```
+Daemon · 127.0.0.1:8765
+  [1/2] ✓ Arranque       4,0 s
+  [2/2] ✓ Calentamiento  4,0 s
+──────────────────────────────────────────────────
+✓ Daemon listo en 8,0 s · pid 6148
+```
+
+Si el plazo del calentamiento vence o el calentamiento falla, el daemon sigue en marcha: la etapa queda `○ Calentamiento · <motivo>` con un `⚠` debajo (igual con y sin `--json`) y el cierre es `✓ Daemon en marcha en <total> · pid N`; `daemon status` dice cuándo está listo. Si había un daemon residual degradado, antes aparece la etapa `Parada` con su `⚠`. Con un daemon sano, `daemon start` no toca nada, no tiene etapas y `--json` devuelve `already_running`:
+
+```
+Daemon · 127.0.0.1:8765
+✓ El daemon ya estaba en marcha · pid 6148
+```
+
+Las duraciones son orientativas. Con `--json`, stderr lleva lo mismo y stdout el envelope, con `context` (`addr`, `warm_voice`, `auto_restart`). Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` escribe por stdout una línea como `Daemon: en marcha (pid 1234, puerto 8765, motor listo).`, `Daemon: en marcha, pero no responde: <motivo>.` o `Daemon: detenido.`; en `--json`, estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^(retries-1)` (0,5 s, 1 s, 2 s…) capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Tampoco se reintentan los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente): son de configuración y salen al instante con su código. Sin `--auto-restart`, el daemon es `fail-stop`.
 
@@ -1154,7 +1541,28 @@ Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la C
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz y se reutiliza solo con una voz del mismo contenido: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior, y re-clonar una voz con el mismo nombre la recarga.
 
-`daemon stop` cierra con `✓ Daemon detenido en <total>` —o `✓ No había ningún daemon en marcha.` si no había ninguno, porque decir que se detuvo algo que no corría sería mentir— (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
+`daemon stop` cierra con `✓ Daemon detenido en <total>` —o `✓ No había ningún daemon en marcha.` (`not_running`, sin etapas) si no había ninguno, porque decir que se detuvo algo que no corría sería mentir— (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa: la etapa queda `✗`, siguen el separador y el `Error:`, y sale por veredicto con `still_running` y exit 5, sin borrar la pista):
+
+```
+Daemon · 127.0.0.1:8765
+✓ Daemon detenido en 0,5 s
+```
+
+`daemon restart` comprueba antes que el modelo está provisionado, hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo, y cierra con el pid nuevo. Sin daemon en marcha, la parada queda omitida:
+
+```
+Daemon · 127.0.0.1:8765
+Parada → Arranque
+
+Parada
+  [1/3] ○ Parada del daemon · no había ningún daemon en marcha
+Arranque
+  [2/3] ✓ Arranque           3,5 s
+  [3/3] ✓ Calentamiento      4,0 s
+──────────────────────────────────────────────────
+✓ Daemon reiniciado en 7,5 s · pid 5236
+  Parada 0,0 s · Arranque 7,5 s
+```
 
 ### Uso con daemon
 
@@ -1182,15 +1590,18 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
 conexión con latidos NDJSON (ver [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md#transporte-streaming-ndjson-y-presupuesto-de-inactividad));
-el cliente muestra cada etapa con su tiempo (traduciendo, sintetizando) y, mientras la síntesis espera, lo dice en la misma línea viva sin cerrarla como hecha: «Esperando turno para sintetizar…», «Calentando el motor…» o «Cargando la voz…» (cuando el motor arranca la voz, por ejemplo al cambiar de voz); y, en cuanto suena la primera muestra, «Reproduciendo…»: el daemon envía el audio en eventos `audio` del mismo flujo, que el cliente reproduce según llegan. Al terminar la reproducción cierra con lo
-mismo que en modo directo, sin ruta y por stderr:
+el cliente muestra cada etapa con su tiempo (traduciendo, sintetizando) y, mientras la síntesis espera, lo dice en la misma línea viva sin cerrarla como hecha: «Esperando turno para sintetizar…», «Calentando el motor…» o «Cargando la voz…» (cuando el motor arranca la voz, por ejemplo al cambiar de voz); y, en cuanto suena la primera muestra, «Reproduciendo…»: el daemon envía el audio en eventos `audio` del mismo flujo, que el cliente reproduce según llegan. La salida es la del modo directo, con la ruta `daemon` en la cabecera, sin ruta de archivo y por stderr:
 
 ```
-✓ Reproducción completada en 4,3 s · primer audio 1,2 s
+Lectura en voz alta es · voz default · daemon
+  [1/2] ✓ Síntesis      4,5 s · primer audio 1,0 s
+  [2/2] ✓ Reproducción  5,0 s · en paralelo con la síntesis
+──────────────────────────────────────────────────
+✓ Reproducción completada en 6,0 s · primer audio 1,0 s
 ```
 
-Con `--json`, en lugar de esa línea emite el payload
-`{"status":"reproduced","voice":…,"first_audio_ms":…,"stalls":…}` en stdout.
+Con `--json`, se emiten las dos cosas: stderr lleva las mismas líneas de arriba y stdout el envelope
+`{"status":"reproduced","voice":…,"first_audio_ms":…,"stalls":…}` con las claves comunes. Las duraciones son orientativas. Si el daemon responde con otra versión de protocolo, la CLI sale con `daemon_version_mismatch` (exit 5) y la solución `daemon restart`.
 
 ---
 
@@ -1200,15 +1611,15 @@ De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 
 ```bash
 # 1. Graba un audio en español (WAV 16-bit, sin ruido de fondo):
-#    habla.wav   - 10+ segundos de habla limpia y continua
+#    habla.wav   - al menos 5 s de habla limpia y continua (se recomiendan 10 s o más; máximo 30 s)
 
 # 2. Clona la voz
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav
-# → ✓ Voz mi_voz clonada en 23,7 s
+# → ✓ Voz mi_voz clonada en 1,5 s   (tras las etapas Lectura, Clonación y Guardado)
 
 # 2b. Con --json, el único artefacto que se guarda
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --json
-# → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false,"removed_speech":[]}
+# → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false,"removed_speech":[],"status":"cloned", …claves comunes}
 
 # 3. Verifica que aparece
 ai-voice-interconnector voice list
@@ -1220,13 +1631,13 @@ ai-voice-interconnector speech say --text "Hola, esto es una prueba" --voice mi_
 
 # 5. O genera un archivo
 ai-voice-interconnector speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
-# → stdout: <ruta del WAV persistido>; stderr: ✓ Síntesis completada en 2,1 s · 3,4 s de audio
+# → resultado: <ruta del WAV persistido>; cierre por stderr: ✓ Síntesis completada en 5,2 s · 2,8 s de audio
 ```
 
 Lo que queda en disco es **un único artefacto por voz**, `voices/<nombre>/reference.qvoice`:
 se genera a partir de la referencia de habla y no se guarda ninguna copia del
 WAV de referencia. `voice clone` cierra con `✓ Voz <nombre> clonada en <total>` por stderr, o con
-`--json` emite el envelope de arriba por stdout, cuyo `speech` es esa ruta y cuyo `precomputed` es `false` en la
+`--json` emite el envelope de arriba por stdout (con la misma salida por stderr), cuyo `speech` es esa ruta y cuyo `precomputed` es `false` en la
 vía directa (el motor es efímero por proceso): solo la vía del daemon lo deja en `true`.
 
 La voz queda guardada de forma permanente: en futuras sesiones basta con
@@ -1254,7 +1665,7 @@ desde el binario como desde el código fuente. En concreto:
   inalcanzable (`speech say --daemon` sin daemon); `6`, un conflicto de estado
   (`voice clone` sobre una voz existente sin `--force`); `20`, un fallo de red en
   `setup` o `self update`; y `130`, una interrupción con Ctrl+C. Los códigos del `11`
-  al `22` pertenecen al ciclo de vida, y el `11` hay que leerlo con cuidado: **no es un
+  al `24` pertenecen al ciclo de vida, y el `11` hay que leerlo con cuidado: **no es un
   error**, es un éxito parcial con el programa ya instalado y la provisión de modelos
   reintentable con `setup` salvo que su causa sea `model_unavailable`.
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
