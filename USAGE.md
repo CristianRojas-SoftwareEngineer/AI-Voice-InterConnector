@@ -594,11 +594,11 @@ Con `--json`, el envelope lleva `status` `synthesized` (o `skipped`), `audio_pat
   "schema_version": "7",
   "stages": [
     { "end_ms": 0, "phase": null, "stage": "validating", "start_ms": 0, "transient": true },
-    { "end_ms": 4000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
-    { "end_ms": 4300, "phase": "save", "stage": "saving", "start_ms": 4000 }
+    { "end_ms": 5000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
+    { "end_ms": 5200, "phase": "save", "stage": "saving", "start_ms": 5000 }
   ],
   "status": "synthesized",
-  "total_ms": 4300,
+  "total_ms": 5200,
   "voice": "default",
   "warnings": []
 }

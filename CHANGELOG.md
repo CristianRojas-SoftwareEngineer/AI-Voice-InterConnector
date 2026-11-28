@@ -145,33 +145,41 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué paso iba el comando ni dónde se iba el tiempo, `--json` cambiaba lo que se veía por stderr, el JSON sabía menos que el texto, la síntesis se daba por terminada con el primer audio aunque siguiera sintetizando y Ctrl+C detenía el daemon del usuario. Ahora los ocho comandos `speech` muestran su recorrido por fases con una duración por etapa, el texto y el JSON salen de un mismo registro de ejecución y Ctrl+C deja la salida honesta sin tocar un daemon ajeno.
+Cada comando mostraba su propio bloque plano de líneas: no decía en qué paso iba ni dónde se iba el tiempo, `--json` cambiaba lo que se veía por stderr, el JSON sabía menos que el texto, la síntesis se daba por terminada con el primer audio aunque siguiera sintetizando y Ctrl+C detenía el daemon del usuario. Ahora todos los comandos muestran su recorrido por fases con una duración por etapa, el texto y el JSON salen de un mismo registro de ejecución, `--json` solo cambia stdout y Ctrl+C deja la salida honesta sin tocar un daemon ajeno. El contrato, las guías de comando y los documentos de uso y de diseño describen esta salida con muestras reales.
 
 ### Cambiado
 
 - **Salida por fases de los comandos `speech`:** `say`, `synthesize`, `transcribe`, `dub`, `denoise`, `play`, `list` y `remove` abren con una cabecera y, cuando el recorrido tiene varias fases, un mapa de fases (`Texto → Voz → Guardado`). Cada fase lleva su título y cada etapa su número `[n/N]`, su duración y su dato; los resultados cuelgan bajo su etapa con `│`, las etapas omitidas se marcan `○` y las fallidas `✗`. Tras un separador, el cierre da el total y el desglose por fase.
 - **`--json` solo cambia stdout:** la cabecera, las etapas, los avisos y el cierre salen por stderr igual con y sin `--json`, y también el `Error:` y la `Solución:` de un error. Con stdout redirigido, `transcribe` y `synthesize` escriben su resultado etiquetado (`Transcripción: …`, `Audio: …`).
+- **Avisos `⚠` bajo la etapa que los causa:** un aviso sale con `⚠` justo debajo de la etapa que lo originó y se registra en `warnings` del envelope; `Aviso:` queda solo para los comandos que no tienen ninguna etapa.
+- **Confirmaciones fuera del reloj:** la cabecera sale antes de preguntar, la pregunta no cuenta en el tiempo y la cancelación sale tras el separador y sin cuerpo, en todos los comandos con confirmación: `Cancelado; no se ha borrado nada.` en los comandos que borran y `Cancelado.` en el resto. El envelope `cancelled` lleva las claves comunes y `stages` vacío.
+- **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
 - **Envelope JSON común:** todo envelope añade `context`, `total_ms`, `stages` (identificador, fase, inicio y fin de cada etapa, y si falló, se interrumpió, se omitió o fue transitoria) y `warnings`, y sale exactamente uno por proceso. El envelope de error conserva `error` y `reason` y suma lo mismo, de modo que una etapa fallida queda registrada.
 - **Etapa `Síntesis` con su duración real:** se cierra cuando la síntesis termina de verdad, no con el primer audio. `Reproducción` se abre en paralelo en cuanto suena la primera muestra, anota los cortes en vivo y se cierra al terminar el audio.
-- **`/synthesize` del daemon emite el evento `translation`:** justo después de traducir y antes de sintetizar, solo si los idiomas difieren, con las mismas claves que en `/dub`.
+- **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
 - **Salida por fases de `voice`, `translate` y `daemon`:** `voice clone` recorre `Entrada → Voz` (`Lectura` o `Grabación`, `Limpieza` si hay `--denoise`, `Clonación` y `Guardado`), `voice remove` y `translate` abren con su cabecera y contexto, y `daemon start`, `stop` y `restart` pintan `Arranque`, `Calentamiento` y `Parada del daemon` con el mismo stderr con y sin `--json`. `translate` sin traducción necesaria (mismo idioma) no pinta cabecera ni etapas.
+- **Aviso de referencia corta en `voice clone`:** si la referencia dura menos de 5 s, el mínimo recomendado, el aviso sale como `⚠` bajo `Lectura` (o tras truncar la grabación) y se registra en `warnings` del envelope.
+- **Cabeceras de `voice remove` y `speech remove`:** `voice remove` abre con `Borrado de la voz <nombre>` y `speech remove` con la de su audio sintetizado; los dos recorren una etapa `Borrado`.
+- **Cabecera `x-schema-version` en toda respuesta del daemon:** antes solo la llevaban las respuestas en stream; ahora la lleva cada respuesta, y la CLI rechaza con `daemon_version_mismatch` un daemon de otra versión.
+- **`/synthesize` del daemon emite el evento `translation`:** justo después de traducir y antes de sintetizar, solo si los idiomas difieren, con las mismas claves que en `/dub`.
 - **Eventos `denoise` y `save` en `/voices/clone`:** el daemon anuncia la limpieza de la referencia y el guardado de la voz como etapas propias, igual que `/synthesize` y `/dub` anuncian las suyas. `/dub` emite `denoise_queue` con latidos mientras espera su turno de limpieza.
 - **`/transcribe` es un stream NDJSON:** emite eventos de progreso y un evento final con el resultado, en lugar de una única respuesta JSON.
-- **Aviso de referencia corta en `voice clone`:** si la referencia dura menos del mínimo recomendado, el aviso sale bajo `Lectura` (o tras truncar la grabación) y se registra en `warnings` del envelope.
 - **`daemon restart` comprueba el modelo antes de parar:** si falta el modelo de síntesis falla con `model_missing` sin tocar el daemon en marcha ni su pidfile.
-- **Hasta 1000 caracteres por síntesis:** el máximo de texto pasa de 500 a 1000 caracteres. Medido con la voz de fábrica en español y en inglés, el motor actual sintetiza textos de hasta 1000 caracteres completos y sin degradación del habla.
-- **Doblaje de hasta 30 s:** el audio de entrada de `speech dub` pasa de 40 a 30 s, igual que la referencia de `voice clone`. Treinta segundos de habla son unos 500 caracteres, así que el texto traducido queda con margen bajo el máximo de síntesis.
-- **Temperatura de síntesis 0,45:** la de producción pasa de 0,35 a 0,45, la nueva temperatura por defecto del motor `qwen-tts-engine` 1.4.0. Es la que menos voz crujiente añade al cierre de las frases y la que suena más natural a la escucha. Cambia el audio de toda síntesis sin `--temperature`.
-- **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
-- **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
+- **Cierre de `daemon start` y `daemon restart`:** lleva solo `· pid N`, sin repetir el tiempo del calentamiento, que ya consta en su etapa.
+- **`already_running` y `not_running` sin etapas:** `daemon start` con un daemon ya en marcha y `daemon stop` sin daemon no recorren ninguna etapa: tras la cabecera dan su cierre directo y su envelope no lleva etapas.
+- **`daemon restart` sin daemon:** marca la parada como omitida, `○ Parada del daemon · no había ningún daemon en marcha`, y sigue con el arranque.
 - **Salida por fases de `setup`, `cleanup`, `self install`, `self update`, `self uninstall` y `doctor --repair`:** abren con una cabecera, recorren una fase con etapas `[n/N]` y cierran con el cierre común, sin nada después. Los datos del resumen de `self install` (PATH, modelos) pasan a ser notas de sus etapas, y `--no-modify-path` se indica en la cabecera y en el `context`. `doctor --repair` tiene una etapa única `Reparación`.
 - **Descargas de modelos como una etapa por modelo:** `setup`, `self install` y el hijo de `self update` muestran `Descarga` con porcentaje y velocidad en la línea viva, sin barras de progreso. Sin terminal, la etapa se anuncia una vez y deja un latido cada 10 s; `AVI_SETUP_HEARTBEAT` sigue saliendo con `AVI_SETUP_WATCHDOG`. `setup --force-update` añade la etapa `Purga` antes de las descargas.
 - **Simulaciones con cabecera, plan y cierre común:** `cleanup --dry-run`, `self uninstall --dry-run` y `speech denoise --dry-run` escriben la cabecera, el plan por stdout (o dentro del envelope `planned`, con `context` y sin `stages`) y `✓ Simulación completada · no se ha borrado nada`.
-- **Confirmaciones fuera del reloj:** la cabecera sale antes de preguntar, la pregunta no cuenta en el tiempo y la cancelación sale tras el separador, con `Cancelado; no se ha borrado nada.` en los comandos que borran y `Cancelado.` en el resto. El envelope `cancelled` lleva las claves comunes y `stages` vacío.
-- **`Parada del daemon` solo con un daemon activo:** `setup`, `cleanup`, `self install`, `self update` y `self uninstall` solo muestran la etapa si había un daemon en marcha; en `cleanup` deja de ser una etapa falsa.
+- **`Parada del daemon` solo con un daemon activo:** `cleanup`, `self install`, `self update` y `self uninstall` solo muestran la etapa si había un daemon en marcha; en `cleanup` deja de ser una etapa falsa.
 - **Hijo de `self update` anidado:** el binario nuevo pinta sus etapas sin numerar y sangradas dentro de `Reemplazo`, sin cabecera ni cierre. El padre solo lo corta si deja de emitir latidos, así que una descarga larga pero viva ya no se aborta.
 - **Veredicto de `doctor` también con `--json`:** se escribe siempre por stderr.
+- **Hasta 1000 caracteres por síntesis:** el máximo de texto pasa de 500 a 1000 caracteres. Medido con la voz de fábrica en español y en inglés, el motor actual sintetiza textos de hasta 1000 caracteres completos y sin degradación del habla.
+- **Doblaje de hasta 30 s:** el audio de entrada de `speech dub` pasa de 40 a 30 s, igual que la referencia de `voice clone`. Treinta segundos de habla son unos 500 caracteres, así que el texto traducido queda con margen bajo el máximo de síntesis.
+- **Temperatura de síntesis 0,45:** la de producción pasa de 0,35 a 0,45, la nueva temperatura por defecto del motor `qwen-tts-engine` 1.4.0. Es la que menos voz crujiente añade al cierre de las frases y la que suena más natural a la escucha. Cambia el audio de toda síntesis sin `--temperature`.
+- **Motor `qwen-tts-engine` 1.4.0:** queda fijado como versión del motor, y `SOURCE-OFFER.md` apunta a su tag y a su archivo de fuentes.
 - **Dependencias:** se retira `indicatif` de `avi-lifecycle`.
+- **Pruebas sobre la documentación retiradas:** se eliminan las dos pruebas que leían las guías y el contrato para vigilar versiones y flags, y los envelopes de referencia de `translate --daemon` y de `daemon stop` con la parada sin concluir pasan a ser los reales y se comparan en toda su forma. La documentación se mantiene al día en el cierre de cada cambio.
 
 ### Corregido
 
@@ -179,12 +187,12 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **Dos medidas del primer audio:** la etapa de síntesis medía un fragmento más que el `first_audio_ms` del JSON. Ahora es una sola medida, desde que abre `Síntesis` hasta la primera muestra en el dispositivo, igual en la terminal y en el JSON.
 - **`Guardando…` pegado al JSON:** `speech synthesize --json` con terminal dejaba `Guardando… 0,0 s` en la misma línea que el envelope. Ahora `Guardado` se cierra antes de emitirlo.
 - **Ctrl+C que mataba el daemon del usuario:** interrumpir un comando cliente terminaba el daemon registrado, aunque lo hubiera arrancado otro, y la salida quedaba entre el código 130 y el 5. Ahora solo se detiene el daemon que lanzó el propio proceso, y la salida es siempre 130.
-- **`daemon start` con stderr distinto según `--json`:** `--json` cambiaba lo que `daemon start` mostraba por stderr. Ahora es el mismo en ambos modos.
+- **Avisos de las consultas fuera del JSON:** los avisos de las consultas no llegaban a `warnings` del envelope.
 - **`daemon stop` sin `✗` al fallar:** una parada que no concluía no marcaba la etapa como fallida. Ahora deja `✗ Parada del daemon`, el separador y el `Error:` en ambos modos.
 - **Error de una parada fallida con `pid Some(N)`:** el mensaje mostraba el formato de depuración de la opción en lugar del número.
 - **`daemon restart` dejaba sin daemon:** con el modelo ausente paraba el daemon y luego no podía arrancarlo. Ahora comprueba el modelo primero.
-- **Avisos de las consultas fuera del JSON:** los avisos de las consultas no llegaban a `warnings` del envelope.
-- **stderr distinto con `--json` en el ciclo de vida:** `cleanup`, `self uninstall`, `setup`, `self install`, `self update` y `doctor` escribían cosas distintas por stderr con y sin `--json`. Ahora es el mismo en ambos modos.
+- **stderr distinto con `--json`:** `daemon start`, `cleanup`, `self uninstall`, `setup`, `self install`, `self update` y `doctor` escribían cosas distintas por stderr con y sin `--json`. Ahora es el mismo en ambos modos.
+- **`doctor` sin `Solución:`:** con comprobaciones fallidas, el `Error:` no decía qué hacer. Ahora añade la línea `Solución:` con las órdenes que resuelven las comprobaciones fallidas (o, si ninguna trae orden, una indicación genérica), con y sin `--json`.
 - **`cleanup` cerraba con `✓` con rutas sin borrar:** ahora marca la etapa incompleta, avisa por cada ruta y sale con error.
 - **`self uninstall` salía con 0 con rutas sin borrar:** ahora sale con error y publica `failed`.
 - **La pregunta de `self update` contaba en el total:** ahora queda fuera del reloj.
@@ -194,26 +202,26 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 
 ### Notas de release
 
-Cambios incompatibles de los envelopes y de la salida de los comandos `speech`.
+Cambios incompatibles de los envelopes y de la salida de todos los comandos.
 
-- **`CLI_SCHEMA_VERSION` pasa a `"7"`:** el envelope de la CLI gana las claves comunes y los `status` nuevos descritos arriba.
-- **`status` de `synthesize` y de `transcribe`:** `success` pasa a `synthesized`, y `transcribe` emite `transcribed`. El plugin EvolutiveX-Agents debe adoptar `synthesized`.
-- **Etiqueta obligatoria en el stdout de `transcribe` y `synthesize` sin `--json`:** la salida es `Transcripción: <texto>` y `Audio: <ruta>`, no el valor desnudo. Un pipe que lea el valor sin etiqueta deja de funcionar; la vía de máquina es `--json`.
-- **`denoise --json` pasa de JSONL a un envelope único.**
 - **`--json` ya no suprime la cabecera ni el cierre en stderr.**
 - **`--json` con `2>&1` no está soportado:** el stderr de texto y el envelope se mezclarían en el mismo flujo.
 - **PowerShell 5.1 trata las líneas de stderr como errores** cuando se redirigen o se capturan; use `--json` y lea solo stdout.
+- **Cierre de simulación:** pasa a `Simulación completada · no se ha borrado nada`. Las operaciones que no borran cancelan con `Cancelado.`.
+- **`CLI_SCHEMA_VERSION` pasa a `"7"`:** el envelope de la CLI gana las claves comunes y los `status` nuevos `cloned` (`voice clone`) y `translated` (`translate`). Un consumidor con vocabulario cerrado debe adoptarlos.
 - **`reason` nuevo `interrupted`** (exit 130), emitido en el envelope de error cuando Ctrl+C interrumpe un comando.
-- **`DAEMON_SCHEMA_VERSION` pasa a `"8"`:** `/transcribe` es un stream NDJSON, no una respuesta JSON única. Tras actualizar hay que ejecutar `daemon restart`: la CLI rechaza un daemon de otra versión con `reason` `daemon_version_mismatch` (exit 5).
-- **`status` nuevos:** `voice clone` emite `cloned` y `cancelled`, `voice remove` emite `removed` y `cancelled`, `translate` emite `translated`, `daemon start` emite `started` y `already_running`, y `daemon restart` emite `restarted`. Un consumidor con vocabulario cerrado debe adoptarlos.
-- **Etiqueta `Traducción:` en el stdout de `translate` sin `--json`:** la salida es `Traducción: <texto>`, no el valor desnudo; la vía de máquina es `--json`.
+- **`status` de `synthesize` y de `transcribe`:** `success` pasa a `synthesized`, y `transcribe` emite `transcribed`. El plugin EvolutiveX-Agents debe adoptar `synthesized`.
+- **Etiqueta obligatoria en el stdout de `transcribe`, `synthesize` y `translate` sin `--json`:** la salida es `Transcripción: <texto>`, `Audio: <ruta>` y `Traducción: <texto>`, no el valor desnudo. Un pipe que lea el valor sin etiqueta deja de funcionar; la vía de máquina es `--json`.
+- **`denoise --json` pasa de JSONL a un envelope único.**
+- **`DAEMON_SCHEMA_VERSION` pasa a `"8"`:** `/transcribe` es un stream NDJSON, no una respuesta JSON única, y toda respuesta lleva la cabecera `x-schema-version`. Tras actualizar hay que ejecutar `daemon restart`.
+- **`reason` nuevo `daemon_version_mismatch` (exit 5):** la CLI rechaza un daemon de otra versión, y su solución es `daemon restart`.
 - **`setup` sin descargas responde `already_provisioned`:** con todos los modelos presentes ya no devuelve `completed`. Sus `status` son `completed`, `already_provisioned` y `cancelled`.
 - **`self update --check` no lleva `status`:** es una consulta; muestra `Versión instalada:` y `Versión disponible:` sin cabecera. `self update` ya al día responde `already_up_to_date`.
 - **`reason` nuevo `cleanup_incomplete` (exit 23):** `cleanup` con rutas sin borrar conserva `status: cleanup_complete` y el `reason` indica que el éxito es parcial. `cleanup --json` publica `failed` y `kept`.
 - **`reason` nuevo `uninstall_incomplete` (exit 24):** `self uninstall` con rutas sin borrar; `program_dir_kept` tiene prioridad. `self uninstall --json` publica `failed`.
+- **Las simulaciones dejan `removed` vacío:** `cleanup --dry-run --json` y `self uninstall --dry-run --json` llevan el plan solo en `planned`, y `removed` es `[]` porque no se borró nada. Un consumidor que leía el plan de `removed` debe leerlo de `planned`.
 - **`doctor --repair --json` lleva `status: "repaired"`;** `doctor` a secas sigue sin `status`.
 - **`self install --json` lleva `modify_path` en `context`.**
-- **Cierre de simulación:** pasa a `Simulación completada · no se ha borrado nada`. Las operaciones que no borran cancelan con `Cancelado.`.
 
 ## [0.47.0] — 2026-11-26
 

@@ -783,8 +783,7 @@ Entrada
   [1/2] ✓ Lectura        0,2 s
 Texto
   [2/2] ✓ Transcripción  3,5 s
-        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
- respectivas bases de datos.
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
 ──────────────────────────────────────────────────
 ✓ Transcripción completada en 3,7 s
   Entrada 0,2 s · Texto 3,5 s
@@ -797,8 +796,7 @@ Entrada
   [1/2] ✓ Lectura        0,2 s
 Texto
   [2/2] ✓ Transcripción  0,6 s
-        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
- respectivas bases de datos.
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
 ──────────────────────────────────────────────────
 ✓ Transcripción completada en 0,8 s
   Entrada 0,2 s · Texto 0,6 s
@@ -811,11 +809,9 @@ Entrada
   [1/5] ✓ Lectura        0,2 s
 Texto
   [2/5] ✓ Transcripción  3,5 s
-        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
- respectivas bases de datos.
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
   [3/5] ✓ Traducción     0,5 s
-        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together wit
-h their respective databases.
+        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together with their respective databases.
 Voz · streaming
   [4/5] ✓ Síntesis       10,0 s · primer audio 3,0 s
   [5/5] ✓ Reproducción   9,5 s · en paralelo con la síntesis
@@ -831,11 +827,9 @@ Entrada
   [1/5] ✓ Lectura        0,2 s
 Texto
   [2/5] ✓ Transcripción  0,6 s
-        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus
- respectivas bases de datos.
+        │ los roles que requieren de liderazgo técnico, enfocado en el desarrollo, mantenimiento y evolución de sistemas backend junto a sus respectivas bases de datos.
   [3/5] ✓ Traducción     0,3 s
-        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together wit
-h their respective databases.
+        │ the roles that require technical leadership, focused on the development, maintenance and evolution of backend systems together with their respective databases.
 Voz · streaming
   [4/5] ✓ Síntesis       8,0 s · primer audio 1,0 s
   [5/5] ✓ Reproducción   9,5 s · en paralelo con la síntesis
@@ -892,11 +886,11 @@ Con `--json`, stdout lleva **solo** el envelope y stderr es el mismo que sin `--
   "schema_version": "7",
   "stages": [
     { "end_ms": 0, "phase": null, "stage": "validating", "start_ms": 0, "transient": true },
-    { "end_ms": 4000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
-    { "end_ms": 4300, "phase": "save", "stage": "saving", "start_ms": 4000 }
+    { "end_ms": 5000, "phase": "voice", "stage": "synthesizing", "start_ms": 0 },
+    { "end_ms": 5200, "phase": "save", "stage": "saving", "start_ms": 5000 }
   ],
   "status": "synthesized",
-  "total_ms": 4300,
+  "total_ms": 5200,
   "voice": "default",
   "warnings": []
 }
