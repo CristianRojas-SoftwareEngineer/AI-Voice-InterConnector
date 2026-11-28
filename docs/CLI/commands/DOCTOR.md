@@ -34,6 +34,8 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
+`doctor` a secas emite estas nueve claves y `schema_version`, sin `status`. Con `--repair` el envelope añade `status: "repaired"`, `context: {}` y las claves comunes `total_ms`, `stages` (una sola, `repairing`) y `warnings`.
+
 `schema_version` lo inyecta `emit_raw_json`; ver [las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema).
 
 ---
@@ -67,7 +69,9 @@ Este es el punto donde el contrato es más estricto y donde el comportamiento se
 
 Sin `--json`, todas las comprobaciones salen por stdout, bajo la cabecera `Diagnóstico:`, una por línea: `  ✓ <etiqueta>: <detalle>` si pasa y `  ✗ <etiqueta>: <detalle> → <indicación>` si falla. Las etiquetas están en español (`Recibo de instalación`, `Comando en el PATH`, `PATH sin duplicados`, `Restos pendientes`, `Modelos`, `ONNX Runtime`) y los identificadores internos (`install_receipt`, `path_resolves`…) solo salen en `--json`. La indicación de una comprobación fallida lleva la orden concreta: ``ejecuta `ai-voice-interconnector setup` `` para los modelos y ``ejecuta `ai-voice-interconnector doctor --repair` `` para los restos pendientes. No hay una línea «Pista» aparte.
 
-Al final, sin fallos escribe `✓ Diagnóstico sin problemas.` por stderr; con fallos, el comando aplica la regla de «envelope ya emitido»: en texto escribe `Error: N comprobaciones fallan.` (`doctor_failed`, sin `Solución:`) y en `--json` no escribe nada más que el reporte, y en los dos casos sale con 1. `doctor --repair` cierra con `✓ Reparación completada en <total>`; su etapa `repairing` («Reparando los restos…») es la única del comando y no deja su línea `✓` (queda solo el cierre).
+El veredicto sale por **stderr** en los dos modos, y `--json` solo cambia stdout. Sin fallos escribe `✓ Diagnóstico sin problemas.` (solo sin `--repair`). Con fallos escribe `Error: N comprobaciones fallan.` seguido de `Solución:`, que reúne las órdenes de las comprobaciones fallidas que tienen indicación (sin repetirlas y en el orden del informe), por ejemplo ``Solución: Ejecuta `ai-voice-interconnector doctor --repair`; ejecuta `ai-voice-interconnector setup`.``; si ninguna trae orden, la solución es `Revisa las comprobaciones marcadas con ✗ en el diagnóstico.`. En `--json` stdout lleva solo el reporte, y en los dos modos el comando sale con 1.
+
+`doctor --repair` escribe la cabecera `Reparación de los restos pendientes`, ejecuta su etapa única `repairing` («Reparando los restos…»), cierra con `✓ Reparación completada en <total>` y, en este orden, después imprime las comprobaciones por stdout y por último el separador y el `Error:` con su `Solución:` si algo sigue fallando. Con una sola etapa, la línea `✓` de la etapa no se escribe: queda solo el cierre.
 
 ---
 
@@ -126,7 +130,7 @@ Al final, sin fallos escribe `✓ Diagnóstico sin problemas.` por stderr; con f
 
 | Situación | Código | `reason` |
 |---|---|---|
-| Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`) |
+| Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`; por stderr, `Error:` y `Solución:`) |
 | No se pudo resolver el ejecutable en ejecución | 1 | `doctor_failed` |
 
 **`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. Un recibo ilegible se informa como `install_receipt` fallido (el detalle nombra el fichero) y el veredicto sale con exit 1. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o no se pudo serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
@@ -140,4 +144,261 @@ ai-voice-interconnector doctor                       # reporte en texto, exit 0 
 ai-voice-interconnector doctor --repair              # barre los restos pendientes y reevalúa
 ai-voice-interconnector --json doctor                # envelope con las nueve claves
 ai-voice-interconnector --json doctor | jq .failed   # solo los chequeos que fallan
+```
+
+---
+
+## Muestras de salida
+
+Salidas reales del binario, en una máquina sin instalación registrada ni modelos descargados. Las duraciones son orientativas.
+
+**`doctor`** (en la terminal; sale con 1):
+
+```
+Diagnóstico:
+  ✗ Recibo de instalación: no hay recibo de instalación
+  ✗ Comando en el PATH: el comando no resuelve a la instalación registrada
+  ✓ PATH sin duplicados: sin entradas duplicadas en el PATH
+  ✓ Restos pendientes: sin residuos de operaciones anteriores
+  ✗ Modelos: faltan: opus-mt-es-en, opus-mt-en-es, parakeet-tdt-v3, dpdfnet8, qwen3-tts-0.6b-base → ejecuta `ai-voice-interconnector setup`
+  ✓ ONNX Runtime: ONNX Runtime cargada desde %LOCALAPPDATA%\Programs\ai-voice-interconnector\onnxruntime.dll
+Error: 3 comprobaciones fallan.
+Solución: Ejecuta `ai-voice-interconnector setup`.
+```
+
+**`--json doctor`** (sale con 1). stdout lleva el reporte:
+
+```json
+{
+  "channel": "unmanaged",
+  "checks": [
+    {
+      "detail": "no hay recibo de instalación",
+      "name": "install_receipt",
+      "ok": false
+    },
+    {
+      "detail": "el comando no resuelve a la instalación registrada",
+      "name": "path_resolves",
+      "ok": false
+    },
+    {
+      "detail": "sin entradas duplicadas en el PATH",
+      "name": "path_duplicates",
+      "ok": true
+    },
+    {
+      "detail": "sin residuos de operaciones anteriores",
+      "name": "pending_artifacts",
+      "ok": true
+    },
+    {
+      "detail": "faltan: opus-mt-es-en, opus-mt-en-es, parakeet-tdt-v3, dpdfnet8, qwen3-tts-0.6b-base",
+      "name": "models_provisioned",
+      "ok": false
+    },
+    {
+      "detail": "ONNX Runtime cargada desde %LOCALAPPDATA%\\Programs\\ai-voice-interconnector\\onnxruntime.dll",
+      "name": "onnx_runtime",
+      "ok": true
+    }
+  ],
+  "failed": [
+    "install_receipt",
+    "path_resolves",
+    "models_provisioned"
+  ],
+  "install": {
+    "data_dir": "%LOCALAPPDATA%\\ai-voice-interconnector\\data",
+    "dir": "%LOCALAPPDATA%\\Programs\\ai-voice-interconnector",
+    "receipt": "absent",
+    "version": null
+  },
+  "models": {
+    "missing": [
+      "opus-mt-es-en",
+      "opus-mt-en-es",
+      "parakeet-tdt-v3",
+      "dpdfnet8",
+      "qwen3-tts-0.6b-base"
+    ],
+    "provisioned": [],
+    "root": "%LOCALAPPDATA%\\ai-voice-interconnector\\cache\\models",
+    "shared_root": false,
+    "size_bytes": 0
+  },
+  "path": {
+    "coexisting": [
+      {
+        "channel": "unmanaged",
+        "path": "C:\\Tools\\ai-voice-interconnector",
+        "takes_precedence": true
+      },
+      {
+        "channel": "unmanaged",
+        "path": "%LOCALAPPDATA%\\Programs\\ai-voice-interconnector",
+        "takes_precedence": false
+      }
+    ],
+    "duplicate_entries": [],
+    "integration": "not_modified",
+    "resolves_to_this_install": false
+  },
+  "pending": {
+    "failure_logs": [],
+    "parked": [],
+    "pending_failures": [],
+    "scratch": [],
+    "stagings": [],
+    "temporaries": [],
+    "transaction_journal": false,
+    "unknown_owner": [],
+    "unreadable": []
+  },
+  "schema_version": "7",
+  "target": "x86_64-pc-windows-msvc",
+  "version": "0.47.0"
+}
+```
+
+y stderr lleva el veredicto:
+
+```
+Error: 3 comprobaciones fallan.
+Solución: Ejecuta `ai-voice-interconnector setup`.
+```
+
+**`doctor --repair`** (en la terminal; sale con 1). El orden es cierre, comprobaciones y `Error:`:
+
+```
+Reparación de los restos pendientes
+✓ Reparación completada en 0,0 s
+Diagnóstico:
+  ✗ Recibo de instalación: no hay recibo de instalación
+  ✗ Comando en el PATH: el comando no resuelve a la instalación registrada
+  ✓ PATH sin duplicados: sin entradas duplicadas en el PATH
+  ✓ Restos pendientes: sin residuos de operaciones anteriores
+  ✗ Modelos: faltan: opus-mt-es-en, opus-mt-en-es, parakeet-tdt-v3, dpdfnet8, qwen3-tts-0.6b-base → ejecuta `ai-voice-interconnector setup`
+  ✓ ONNX Runtime: ONNX Runtime cargada desde %LOCALAPPDATA%\Programs\ai-voice-interconnector\onnxruntime.dll
+──────────────────────────────────────────────────
+Error: 3 comprobaciones fallan.
+Solución: Ejecuta `ai-voice-interconnector setup`.
+```
+
+**`--json doctor --repair`** (sale con 1). El envelope añade `context`, `stages`, `status`, `total_ms` y `warnings` a las nueve claves:
+
+```json
+{
+  "channel": "unmanaged",
+  "checks": [
+    {
+      "detail": "no hay recibo de instalación",
+      "name": "install_receipt",
+      "ok": false
+    },
+    {
+      "detail": "el comando no resuelve a la instalación registrada",
+      "name": "path_resolves",
+      "ok": false
+    },
+    {
+      "detail": "sin entradas duplicadas en el PATH",
+      "name": "path_duplicates",
+      "ok": true
+    },
+    {
+      "detail": "sin residuos de operaciones anteriores",
+      "name": "pending_artifacts",
+      "ok": true
+    },
+    {
+      "detail": "faltan: opus-mt-es-en, opus-mt-en-es, parakeet-tdt-v3, dpdfnet8, qwen3-tts-0.6b-base",
+      "name": "models_provisioned",
+      "ok": false
+    },
+    {
+      "detail": "ONNX Runtime cargada desde %LOCALAPPDATA%\\Programs\\ai-voice-interconnector\\onnxruntime.dll",
+      "name": "onnx_runtime",
+      "ok": true
+    }
+  ],
+  "context": {},
+  "failed": [
+    "install_receipt",
+    "path_resolves",
+    "models_provisioned"
+  ],
+  "install": {
+    "data_dir": "%LOCALAPPDATA%\\ai-voice-interconnector\\data",
+    "dir": "%LOCALAPPDATA%\\Programs\\ai-voice-interconnector",
+    "receipt": "absent",
+    "version": null
+  },
+  "models": {
+    "missing": [
+      "opus-mt-es-en",
+      "opus-mt-en-es",
+      "parakeet-tdt-v3",
+      "dpdfnet8",
+      "qwen3-tts-0.6b-base"
+    ],
+    "provisioned": [],
+    "root": "%LOCALAPPDATA%\\ai-voice-interconnector\\cache\\models",
+    "shared_root": false,
+    "size_bytes": 0
+  },
+  "path": {
+    "coexisting": [
+      {
+        "channel": "unmanaged",
+        "path": "C:\\Tools\\ai-voice-interconnector",
+        "takes_precedence": true
+      },
+      {
+        "channel": "unmanaged",
+        "path": "%LOCALAPPDATA%\\Programs\\ai-voice-interconnector",
+        "takes_precedence": false
+      }
+    ],
+    "duplicate_entries": [],
+    "integration": "not_modified",
+    "resolves_to_this_install": false
+  },
+  "pending": {
+    "failure_logs": [],
+    "parked": [],
+    "pending_failures": [],
+    "scratch": [],
+    "stagings": [],
+    "temporaries": [],
+    "transaction_journal": false,
+    "unknown_owner": [],
+    "unreadable": []
+  },
+  "schema_version": "7",
+  "stages": [
+    {
+      "end_ms": 0,
+      "phase": null,
+      "stage": "repairing",
+      "start_ms": 0
+    }
+  ],
+  "status": "repaired",
+  "target": "x86_64-pc-windows-msvc",
+  "total_ms": 0,
+  "version": "0.47.0",
+  "warnings": []
+}
+```
+
+y stderr, que sin terminal anuncia la etapa:
+
+```
+Reparación de los restos pendientes
+● Reparando los restos…
+✓ Reparación completada en 0,0 s
+──────────────────────────────────────────────────
+Error: 3 comprobaciones fallan.
+Solución: Ejecuta `ai-voice-interconnector setup`.
 ```
