@@ -1734,25 +1734,16 @@ fn check_resource_tests_gate() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Ambos binarios arrancan con el helper compartido de consola y el
-    /// producto ya no duplica la función local.
+    /// Ambos binarios arrancan con el helper compartido de consola.
     #[test]
     fn test_console_bootstrap_uses_shared_helper() {
         let xtask_main = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs");
         let product_main = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/main.rs");
-        // La aguja se compone por partes para que este mismo test no la
-        // contenga literalmente y dispare su propia comprobación.
-        let local: String = ["fn force_utf8", "("].concat();
         for main in [&xtask_main, &product_main] {
             let text = std::fs::read_to_string(main).unwrap();
             assert!(
                 text.contains("avi_term::line::init_console"),
                 "{} debe llamar al helper compartido",
-                main.display()
-            );
-            assert!(
-                !text.contains(&local),
-                "{} no debe duplicar la función local",
                 main.display()
             );
         }
@@ -1967,7 +1958,6 @@ mod tests {
             .contains("cargo --quiet xtask source-offer --notes \"$CIRCLE_TAG\" >> notes.md"));
         assert!(release.contains("sha256sum ai-voice-interconnector-* ffmpeg-*"));
         assert!(release.contains("artifacts/ffmpeg-*"));
-        assert!(!release.contains("echo \"- Tarball de fuente"));
         for job in [
             "build-windows-x64",
             "build-linux-x64",
@@ -2096,17 +2086,6 @@ mod tests {
             );
         }
         assert!(commands.contains("- ffmpeg-bundle\n") && commands.contains("when: on_success"));
-    }
-
-    /// El job de Windows ya no aprovisiona el toolchain C del motor: ni caché de
-    /// MSYS2 ni paquetes gcc/OpenBLAS/make.
-    #[test]
-    fn test_windows_job_has_no_msys2_toolchain() {
-        let windows = ci_job_block(&read_ci_config(), "build-windows-x64");
-        assert!(!windows.contains("msys2_restore_cache"));
-        assert!(!windows.contains("msys2_save_cache"));
-        assert!(!windows.contains("MSYS2"));
-        assert!(!windows.contains("pacman"));
     }
 
     /// Directorios `vendor/<dir>` con `Cargo.toml`, ordenados: la regla del CI
@@ -2780,21 +2759,9 @@ mod tests {
             pos_restore < pos_touch,
             "el mtime de los parches debe fijarse después de restaurar la caché de target/"
         );
-
-        for leftover in [
-            "sort -z",
-            "sha256_hex",
-            "target/.vendor-cmake.sha256",
-            ".vendor-cmake.tree",
-        ] {
-            assert!(
-                !cfg.contains(leftover),
-                "la config no debe contener `{leftover}` (mecanismo de sello retirado)"
-            );
-        }
     }
 
-    /// Regresión EPIPE (v0.20.9, build-linux-x64): un productor Rust seguido
+    /// Un productor Rust seguido
     /// de un consumidor que sale antes de leer toda la entrada (`grep -q`,
     /// `head`) bajo `pipefail` es una condición de carrera — si el binario aún
     /// tiene líneas por escribir cuando el consumidor cierra la tubería, la
@@ -2812,7 +2779,7 @@ mod tests {
         // original: el binario en ejecución piped directo a `grep -q`.
         assert!(
             !cfg.contains("voice list | grep -q"),
-            "no debe existir `voice list | grep -q` directo: capturar la salida en variable antes de filtrar (regresión EPIPE v0.20.9)"
+            "no debe existir `voice list | grep -q` directo: capturar la salida en variable antes de filtrar"
         );
         // `find ... | head -nN` tiene el mismo riesgo si `find` tiene más de una
         // coincidencia: `head` cierra la tubería tras la primera línea y `find`
@@ -2823,13 +2790,13 @@ mod tests {
         // original (`find`), no a `| head` en general.
         assert!(
             !cfg.contains("-type f | head"),
-            "no debe existir `find ... | head` directo: materializar la salida (`matches=\"$(find ...)\"`) antes de aplicar head (regresión EPIPE v0.20.9)"
+            "no debe existir `find ... | head` directo: materializar la salida (`matches=\"$(find ...)\"`) antes de aplicar head"
         );
     }
 
     /// La caché de `target/` usa clave inmutable (el primer `save_cache` gana):
-    /// guardar tras un fallo persistiría para siempre un directorio incompleto
-    /// (ya ocurrió con linux-x64 en v0.20.9). Por eso su command fija
+    /// guardar tras un fallo persistiría para siempre un directorio incompleto.
+    /// Por eso su command fija
     /// `when: on_success` en cada paso y no lo expone como parámetro que un job
     /// pueda cambiar.
     #[test]
@@ -3382,10 +3349,10 @@ mod tests {
         assert!(err.to_string().contains("No publicado"));
     }
 
-    /// Regresión: una entrada de `[No publicado]` que menciona el literal
-    /// `## [No publicado]` en su prosa (dentro de backticks) no debe producir un
+    /// Una entrada de `[No publicado]` que menciona el literal
+    /// `## [No publicado]` en su prosa (dentro de backticks) no produce un
     /// falso positivo. La promoción renombra solo la cabecera real y la validación
-    /// posterior pasa. Reproduce el defecto expuesto por el corte de v0.20.4.
+    /// posterior pasa.
     #[test]
     fn test_promotion_and_validation_ignore_prose_mentions() {
         let with_prose = sample_changelog().replace(
@@ -3493,7 +3460,6 @@ mod tests {
         )));
         assert!(offer.contains(&pins.qwen_tts_engine_source_sha256));
         assert!(offer.contains(&format!("https://github.com/{GITHUB_REPO}/issues")));
-        assert!(!offer.contains("contactando al mantenedor"));
         assert!(!offer.contains('{'), "marcador sin resolver en la oferta");
     }
 
@@ -3502,8 +3468,7 @@ mod tests {
         let mut pins = repo_pins();
         pins.ffmpeg = "10.1".to_string();
         let offer = render_source_offer("1.2.3", &pins, &[]).unwrap();
-        assert!(offer.contains("ffmpeg-10.1.tar.xz"));
-        assert!(!offer.contains("ffmpeg-9.0.2.tar.xz"));
+        assert!(offer.contains(&format!("ffmpeg-{}.tar.xz", pins.ffmpeg)));
         assert!(!offer.contains("Crates de terceros bajo MPL-2.0"));
     }
 

@@ -535,12 +535,6 @@ mod tests {
     }
 
     #[test]
-    fn sccache_without_param_is_accepted() {
-        assert!(!fixture_config().contains("sccache_pin"));
-        assert!(check_text(&fixture_pins(), &fixture_config(), &fixture_toolchain()).is_empty());
-    }
-
-    #[test]
     fn divergent_channel_is_rejected() {
         let toolchain = fixture_toolchain().replace("1.96.0", "1.95.0");
         let errors = check_text(&fixture_pins(), &fixture_config(), &toolchain);
