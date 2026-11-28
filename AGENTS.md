@@ -182,11 +182,24 @@ This repository is indexed by the `codebase-memory-mcp` MCP server: a knowledge 
 
 - Searching for literal text content (strings, comments, config values) → Grep is correct.
 - Single-file edits where the file is already known and open.
-- Code written after the last reindex — the graph reflects the last sync; it does not see uncommitted new symbols until resynced.
+- Code written after the last reindex — the graph reflects the last sync; it may not see new symbols until the index catches up.
+- Files the index excludes by design: `.claude/`, `.work/`, `.git/`, `.cargo/`, `engine-bundle/` and binary assets such as images. Skills, hooks, agent definitions and plans live there, so use Grep/Read for them.
+
+**Negative claims need more proof than positive ones.** "No callers", "dead code", "unused" or "nothing else references it" are candidates from the graph, not conclusions:
+
+- Confirm each candidate with `trace_path` (inbound) and `check_index_coverage` for every file the claim relies on and for the scope of the claim. A clean coverage result means "no recorded gap", not "proven complete".
+- Back it with a Grep over the scope, because the graph can miss references that go through macros, trait implementations, conditional compilation (`cfg`) or re-exports.
+- State the limitation when a gap remains; never turn an unconfirmed candidate into a deletion.
+
+**Choosing a subagent.** The installed `codebase-memory*` subagents are read-only and differ in how strong a claim they support. Pick by the claim, and give the Auditor a bounded scope (a crate or a directory), never the whole repository:
+
+- `codebase-memory-scout` — locate candidates quickly; its findings are provisional and never support absence or impact claims.
+- `codebase-memory` — default; verify a specific claim with exact snippets and per-file coverage (callers of a function, effect of a signature change).
+- `codebase-memory-auditor` — before deleting code or asserting absence or complete impact: full pagination, both call directions and source fallback on every coverage gap.
 
 **Keeping the graph fresh:**
 
-- The index does NOT auto-update (`auto_index=false`). After a merge, refactor, or adding/removing files/functions, resync with the `/cbm-resync` user command (incremental, cheap, idempotent).
+- The project is `ai-voice-interconnector`. `auto_index=false` only stops a repository from being indexed on first contact; with `auto_watch=true` a watcher refreshes the active project, but it can lag. After a merge, refactor, or adding/removing files/functions, resync with the `/cbm-resync` user command (incremental, cheap, idempotent); it always passes `--name` so no duplicate index is created.
 - If graph results look stale or missing recently-added symbols, suggest running `/cbm-resync` instead of silently falling back to Grep.
 <!-- </structural_code_intelligence> -->
 
